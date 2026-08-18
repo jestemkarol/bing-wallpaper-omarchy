@@ -7,6 +7,14 @@ The bar button opens a panel with today's image, its title and the photo
 credit. `‹` steps back through the library and `›` forward again, and any day
 can be made the background with one click.
 
+## Requirements
+
+Omarchy with the shell plugin system, plus `curl` and `jq` — both ship with
+Omarchy, and `bing-wallpaper-sync` refuses to run without them. Backgrounds are
+applied through Omarchy's own `omarchy-theme-bg-set`. Nothing else is pulled in,
+and the plugin talks to no service other than Bing's public image-of-the-day
+endpoint.
+
 ## Install
 
 ```bash
