@@ -59,14 +59,22 @@ fail() {
   exit "${2:-1}"
 }
 
+# Called as `need_value "$@"` from a value-taking branch, so $1 is the flag and
+# $2 is whatever followed it. A flag left last on the command line has nothing
+# to shift past: `shift 2` then fails, and since this script runs without -e the
+# failure was ignored and the loop spun on the same argument forever.
+need_value() {
+  (( $# >= 2 )) || fail "$1 requires a value"
+}
+
 while (( $# > 0 )); do
   case "$1" in
-    --market)     MARKET="${2:-}"; shift 2 ;;
-    --resolution) RESOLUTION="${2:-}"; shift 2 ;;
-    --keep)       KEEP_DAYS="${2:-}"; shift 2 ;;
-    --dir)        DATA_DIR="${2:-}"; shift 2 ;;
-    --count)      COUNT="${2:-}"; shift 2 ;;
-    --fixture)    FIXTURE="${2:-}"; shift 2 ;;
+    --market)     need_value "$@"; MARKET="$2"; shift 2 ;;
+    --resolution) need_value "$@"; RESOLUTION="$2"; shift 2 ;;
+    --keep)       need_value "$@"; KEEP_DAYS="$2"; shift 2 ;;
+    --dir)        need_value "$@"; DATA_DIR="$2"; shift 2 ;;
+    --count)      need_value "$@"; COUNT="$2"; shift 2 ;;
+    --fixture)    need_value "$@"; FIXTURE="$2"; shift 2 ;;
     --dry-run)    DRY_RUN=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            usage >&2; fail "unknown option: $1" ;;

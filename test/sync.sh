@@ -338,6 +338,49 @@ printf '{"images":[]}' > "$WORK/empty.json"
 "$SYNC" --fixture "$WORK/empty.json" --dry-run --dir "$WORK/c" >/dev/null 2>&1
 is "rejects an empty archive"       "$?" "2"
 
+# --- a flag with no value ----------------------------------------------------
+
+# A value-taking flag left last on the command line used to hang the script for
+# good: `shift 2` fails with one argument remaining and, since the script runs
+# without -e, nothing noticed and the loop re-read the same argument forever.
+#
+# Every invocation below is wrapped in timeout, and a timeout is reported as the
+# failure it is. A suite that hangs never reports at all, which is worse than
+# one that fails.
+trailing_flag() {
+  local flag="$1" err rc
+  err=$(timeout 5 "$SYNC" --fixture "$FIXTURE" --dir "$WORK/c" "$flag" 2>&1 >/dev/null)
+  rc=$?
+  if (( rc == 124 )); then
+    printf 'hung — the argument loop is spinning'
+  elif (( rc == 0 )); then
+    printf 'exited 0'
+  elif [[ $err != *"$flag requires a value"* ]]; then
+    printf 'exit %d with stderr: %s' "$rc" "$err"
+  else
+    printf 'refused'
+  fi
+}
+
+is "--market alone is refused"      "$(trailing_flag --market)"     "refused"
+is "--resolution alone is refused"  "$(trailing_flag --resolution)" "refused"
+is "--keep alone is refused"        "$(trailing_flag --keep)"       "refused"
+is "--dir alone is refused"         "$(trailing_flag --dir)"        "refused"
+is "--count alone is refused"       "$(trailing_flag --count)"      "refused"
+is "--fixture alone is refused"     "$(trailing_flag --fixture)"    "refused"
+
+# The rest of the argument loop, pinned so the arity check does not disturb it.
+err=$(timeout 5 "$SYNC" --fixture "$FIXTURE" --dir "$WORK/c" --market "" --dry-run 2>&1 >/dev/null)
+is "an explicitly empty value is still a value" \
+  "$([[ $err == *"invalid market:"* ]] && echo yes || echo no)" "yes"
+err=$(timeout 5 "$SYNC" --fixture "$FIXTURE" --dir "$WORK/c" --nonsense --dry-run 2>&1 >/dev/null)
+is "an unknown flag is still named" \
+  "$([[ $err == *"unknown option: --nonsense"* ]] && echo yes || echo no)" "yes"
+timeout 5 "$SYNC" --help >/dev/null 2>&1
+is "--help exits 0"                 "$?" "0"
+timeout 5 "$SYNC" --dry-run --dir "$WORK/c" -h >/dev/null 2>&1
+is "-h still works after other flags" "$?" "0"
+
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"
 (( failed == 0 ))
