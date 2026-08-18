@@ -40,6 +40,7 @@ Item {
   property bool applyPending: false
   property int failureCount: 0
   property string lastError: ""
+  property int pollCount: 0
   property double lastSyncAt: 0
 
   // `library` is a property, so libraryChanged() already exists — Panel.qml
@@ -121,6 +122,17 @@ Item {
     if (!readlinkProc.running) readlinkProc.running = true
   }
 
+  // A transparent bar picks its text color by sampling the wallpaper strip
+  // underneath it (omarchy-bar-text-color). Bar.qml re-runs that on theme and
+  // position changes but not when the background alone changes, so swapping
+  // wallpapers can leave dark text on a bright photo. Nudge it.
+  readonly property bool barRecolorAvailable: root.shell && root.shell.bar
+    && typeof root.shell.bar.scheduleTransparentForegroundRefresh === "function"
+
+  function refreshBarForeground() {
+    if (root.barRecolorAvailable) root.shell.bar.scheduleTransparentForegroundRefresh()
+  }
+
   function rescheduleCheck() {
     checkTimer.interval = Model.nextCheckDelay(root.library, Date.now(), root.failureCount)
     checkTimer.restart()
@@ -137,6 +149,8 @@ Item {
       lastError: root.lastError,
       failureCount: root.failureCount,
       nextCheckInSeconds: Math.round(checkTimer.interval / 1000),
+      pollCount: root.pollCount,
+      barRecolorAvailable: root.barRecolorAvailable,
       background: root.currentBackground,
       ownsBackground: root.ownsBackground,
       current: root.ownsBackground ? currentEntryDate() : "",
@@ -253,6 +267,7 @@ Item {
         root.currentBackground = pendingEntry.file
         root.applied(pendingEntry.file)
         root.notify(pendingEntry)
+        root.refreshBarForeground()
       }
       pendingEntry = null
       root.refreshBackgroundPath()
@@ -263,8 +278,10 @@ Item {
     id: readlinkProc
     command: ["readlink", "-f", root.backgroundLink]
     stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.currentBackground = String(text || "").trim()
+      onStreamFinished: {
+        root.pollCount += 1
+        root.currentBackground = String(text || "").trim()
+      }
     }
   }
 
@@ -282,11 +299,13 @@ Item {
     onTriggered: root.sync(false)
   }
 
-  // Cheap enough to run forever, and it is what tells us the user picked a
-  // different wallpaper by hand — which is the signal that stops us putting
-  // the Bing image back after the next theme switch.
+  // One readlink a minute, which is what tells us the user picked a different
+  // wallpaper by hand — the signal that stops us putting the Bing image back
+  // after the next theme switch. The interval is the width of the one window
+  // where that goes wrong: change the wallpaper by hand and switch themes
+  // inside the same minute, and the Bing image comes back once.
   Timer {
-    interval: 5 * 60 * 1000
+    interval: 60 * 1000
     repeat: true
     running: true
     onTriggered: root.refreshBackgroundPath()
@@ -314,11 +333,24 @@ Item {
     var previous = root.themeName
     root.themeName = name
     if (!previous || previous === name) return
+
+    // The theme just replaced the background either way, so re-read it — even
+    // when we leave the new one alone, status should not keep reporting the
+    // wallpaper from before the switch until the next poll.
+    themeSettleTimer.restart()
+
     if (!root.settings.reapplyAfterThemeChange) return
     if (!root.ownsBackground) return
 
     root.reapplyFile = root.currentBackground
     reapplyTimer.restart()
+  }
+
+  Timer {
+    id: themeSettleTimer
+    interval: 2500
+    repeat: false
+    onTriggered: root.refreshBackgroundPath()
   }
 
   Timer {
