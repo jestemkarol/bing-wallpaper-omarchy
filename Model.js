@@ -238,3 +238,86 @@ function describe(entry) {
     date: formatDate(entry.date)
   }
 }
+
+// ---------------------------------------------------------------- settings
+
+// Mirrors manifest.json's barWidget.defaults — test/model.js asserts the two
+// stay identical, so the manifest remains the documented source of truth while
+// the service can still resolve settings before anything is injected into it.
+var DEFAULTS = {
+  market: "auto",
+  resolution: "UHD",
+  autoApply: true,
+  reapplyAfterThemeChange: true,
+  randomFromLibrary: false,
+  keepDays: 30,
+  notify: false
+}
+
+function bool(value, fallback) {
+  if (value === true || value === false) return value
+  if (value === "true") return true
+  if (value === "false") return false
+  return fallback
+}
+
+function clampInt(value, minimum, maximum, fallback) {
+  var n = Math.floor(Number(value))
+  if (!isFinite(n)) return fallback
+  return Math.max(minimum, Math.min(maximum, n))
+}
+
+// Coerces whatever shell.json holds into the shapes the service relies on. A
+// hand-edited config is the normal case here, not an exotic one.
+function normalizeSettings(raw) {
+  var source = raw && typeof raw === "object" ? raw : {}
+  return {
+    market: trimmed(source.market) || DEFAULTS.market,
+    resolution: trimmed(source.resolution) || DEFAULTS.resolution,
+    autoApply: bool(source.autoApply, DEFAULTS.autoApply),
+    reapplyAfterThemeChange: bool(source.reapplyAfterThemeChange, DEFAULTS.reapplyAfterThemeChange),
+    randomFromLibrary: bool(source.randomFromLibrary, DEFAULTS.randomFromLibrary),
+    keepDays: clampInt(source.keepDays, 1, 365, DEFAULTS.keepDays),
+    notify: bool(source.notify, DEFAULTS.notify)
+  }
+}
+
+// The service gets no settings injected — shell.qml hands service plugins only
+// the shell object — so it reads its own shell.json entry. The entry lives in
+// bar.layout.{left,center,right} when the widget is on the bar, or in the
+// top-level plugins[] array when it runs headless.
+function settingsFromShellConfig(raw, pluginId) {
+  var id = trimmed(pluginId)
+  try {
+    var config = JSON.parse(String(raw || ""))
+    if (!config || typeof config !== "object") return normalizeSettings(null)
+
+    var sections = ["left", "center", "right"]
+    if (config.bar && config.bar.layout) {
+      for (var s = 0; s < sections.length; s++) {
+        var entries = config.bar.layout[sections[s]]
+        if (!Array.isArray(entries)) continue
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i] && trimmed(entries[i].id) === id) return normalizeSettings(entries[i])
+        }
+      }
+    }
+
+    if (Array.isArray(config.plugins)) {
+      for (var j = 0; j < config.plugins.length; j++) {
+        if (config.plugins[j] && trimmed(config.plugins[j].id) === id) return normalizeSettings(config.plugins[j])
+      }
+    }
+  } catch (e) {
+    // fall through to defaults
+  }
+  return normalizeSettings(null)
+}
+
+// Two settings objects only differ in a way that warrants a refetch when they
+// change what lands on disk. Toggling notifications should not redownload the
+// whole library.
+function settingsAffectLibrary(a, b) {
+  if (!a || !b) return true
+  return a.market !== b.market || a.resolution !== b.resolution || a.keepDays !== b.keepDays
+}

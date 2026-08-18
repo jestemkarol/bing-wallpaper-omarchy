@@ -26,14 +26,43 @@ is() {
 
 run() { "$SYNC" --fixture "$FIXTURE" "$@"; }
 
+# The naming contract, restated here on purpose: filenames are what Omarchy
+# shows as the background's display name, so a test that pins them is pinning
+# something a user sees.
+slugged_name() {
+  jq -r --argjson i "$1" '
+    def slug:
+      ascii_downcase
+      | gsub("[^a-z0-9]+"; "-")
+      | gsub("^-+|-+$"; "")
+      | .[0:48]
+      | gsub("-+$"; "");
+    .images[$i]
+    | (if (.title // "") != "" then .title else ((.copyright // "") | split(" (©")[0]) end) as $title
+    | ($title | slug) as $slug
+    | .startdate + (if $slug != "" then "-" + $slug else "" end) + ".jpg"
+  ' "$FIXTURE"
+}
+
 # Populate a library directory with empty-but-nonzero stand-ins for every image
-# the fixture names, so a real (non-dry) run has nothing to download.
+# the fixture names, and a state file that claims them, so a real (non-dry) run
+# has nothing to download.
 seed_images() {
-  local dir="$1" res="$2"
+  local dir="$1" res="$2" count i name
   mkdir -p "$dir/images"
-  while IFS= read -r date; do
-    printf 'x' > "$dir/images/$date-en-US-$res.jpg"
-  done < <(jq -r '.images[].startdate' "$FIXTURE")
+  count=$(jq -r '.images | length' "$FIXTURE")
+  local entries='[]'
+  for (( i = 0; i < count; i++ )); do
+    name=$(slugged_name "$i")
+    printf 'x' > "$dir/images/$name"
+    entries=$(jq -c --arg d "$(jq -r --argjson i "$i" '.images[$i].startdate' "$FIXTURE")" \
+      --arg f "$dir/images/$name" --arg r "$res" \
+      '. + [{date:$d, title:"seed", copyright:"", copyrightLink:"", urlBase:"", market:"en-US", resolution:$r, url:"", file:$f}]' \
+      <<<"$entries")
+  done
+  jq -n --argjson e "$entries" --arg r "$res" \
+    '{version:1, market:"en-US", resolution:$r, keepDays:30, fetchedAt:0, entries:$e}' \
+    > "$dir/state.json"
 }
 
 echo "bing-wallpaper-sync"
@@ -52,9 +81,9 @@ is "newest entry first" "$today" "$(jq -r '[.images[].startdate] | max' "$FIXTUR
 is "builds the UHD url" \
   "$(jq -r '.today.url' <<<"$out")" \
   "https://www.bing.com$(jq -r '.images[0].urlbase' "$FIXTURE")_UHD.jpg"
-is "names the file by date, market and size" \
+is "names the file by date and image title" \
   "$(jq -r '.today.file' <<<"$out")" \
-  "$WORK/a/images/$today-en-US-UHD.jpg"
+  "$WORK/a/images/$(slugged_name 0)"
 is "carries the copyright line" \
   "$(jq -r '.today.copyright' <<<"$out")" \
   "$(jq -r '.images[0].copyright' "$FIXTURE")"
@@ -64,8 +93,10 @@ is "every day gets a title" \
 out=$(run --dry-run --dir "$WORK/a" --resolution 1366x768)
 is "resolution reaches the url" \
   "$(jq -r '.today.url | endswith("_1366x768.jpg")' <<<"$out")" "true"
-is "resolution reaches the filename" \
-  "$(jq -r '.today.file | endswith("-1366x768.jpg")' <<<"$out")" "true"
+is "resolution stays out of the filename" \
+  "$(jq -r '.today.file' <<<"$out")" "$WORK/a/images/$(slugged_name 0)"
+is "the recorded size is the requested one" \
+  "$(jq -r '.today.resolution' <<<"$out")" "1366x768"
 
 # --- state, merge, prune -----------------------------------------------------
 
@@ -77,6 +108,15 @@ is "state lists every day"           "$(jq -r '.entries | length' "$WORK/b/state
 is "state records the market"        "$(jq -r '.market' "$WORK/b/state.json")" "en-US"
 is "entries are newest first" \
   "$(jq -r '[.entries[].date] == ([.entries[].date] | sort | reverse)' "$WORK/b/state.json")" "true"
+
+# A size change reuses the same path but must still refetch, since the file on
+# disk is the wrong image data under the right name.
+seed_images "$WORK/d" UHD
+out=$(run --dir "$WORK/d" --resolution UHD)
+is "a matching size refetches nothing" "$(jq -r '.downloaded' <<<"$out")" "0"
+out=$(run --dir "$WORK/d" --resolution 1366x768 --dry-run)
+is "a size change is detected as stale" \
+  "$(jq -r '.today.resolution' <<<"$out")" "1366x768"
 
 # An archived entry whose file was deleted behind our back must leave
 # state.json. It has to be a day the fixture no longer carries, otherwise the

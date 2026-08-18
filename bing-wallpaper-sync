@@ -97,28 +97,61 @@ jq -e '(.images | type) == "array" and (.images | length) > 0' <<<"$response" >/
 # site-relative path ("/th?id=OHR.Foo_EN-US123"); the download URL is that plus
 # "_<resolution>.jpg". `title` is missing on some markets, so fall back to the
 # copyright line's leading clause.
+# Omarchy renders the background's basename as its display name (see
+# omarchy-theme-bg-current), so the filename carries the image title rather
+# than the market and size — "Geometry Of A Star City" reads better than
+# "En US UHD". A title that slugs to nothing, as a non-Latin market's will,
+# falls back to the date alone.
 remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES_DIR" '
+  def slug:
+    ascii_downcase
+    | gsub("[^a-z0-9]+"; "-")
+    | gsub("^-+|-+$"; "")
+    | .[0:48]
+    | gsub("-+$"; "");
+
   [ .images[]
     | (.urlbase // "") as $base
     | select($base != "")
     | (.copyright // "") as $copy
+    | (.startdate // "") as $date
+    | (if (.title // "") != "" then .title else ($copy | split(" (©")[0]) end) as $title
+    | ($title | slug) as $slug
     | {
-        date: (.startdate // ""),
+        date: $date,
         fullStartDate: (.fullstartdate // ""),
         endDate: (.enddate // ""),
-        title: (if (.title // "") != "" then .title else ($copy | split(" (©")[0]) end),
+        title: $title,
         copyright: $copy,
         copyrightLink: (.copyrightlink // ""),
         urlBase: $base,
         market: $market,
         resolution: $res,
         url: ("https://www.bing.com" + $base + "_" + $res + ".jpg"),
-        file: ($dir + "/" + (.startdate // "unknown") + "-" + $market + "-" + $res + ".jpg")
+        file: ($dir + "/" + $date + (if $slug != "" then "-" + $slug else "" end) + ".jpg")
       }
     | select(.date != "")
   ]' <<<"$response") || fail "could not parse the Bing image archive response" 2
 
 # ------------------------------------------------------------------ download
+
+# Entries older than the API window are kept as long as their file survives, so
+# the library the panel browses is bounded by --keep rather than by Bing's
+# eight-day archive.
+previous='[]'
+if [[ -f $STATE_FILE ]]; then
+  previous=$(jq -c '.entries // []' "$STATE_FILE" 2>/dev/null) || previous='[]'
+fi
+
+# The filename no longer encodes market and size, so "do we already have this
+# day?" is answered by what the stored entry was fetched at, not by the path.
+have_current() {
+  local date="$1" file="$2"
+  [[ -s $file ]] || return 1
+  jq -e --arg d "$date" --arg m "$MARKET" --arg r "$RESOLUTION" --arg f "$file" '
+    any(.[]; .date == $d and .market == $m and .resolution == $r and .file == $f)' \
+    <<<"$previous" >/dev/null 2>&1
+}
 
 download() {
   local url="$1" target="$2"
@@ -145,7 +178,7 @@ if (( ! DRY_RUN )); then
 
   while IFS=$'\t' read -r date url file; do
     [[ -n $date ]] || continue
-    [[ -s $file ]] && continue
+    have_current "$date" "$file" && continue
 
     if download "$url" "$file"; then
       downloaded=$((downloaded + 1))
@@ -159,9 +192,7 @@ if (( ! DRY_RUN )); then
     for alt in "${RESOLUTION_FALLBACKS[@]}"; do
       [[ $alt == "$RESOLUTION" ]] && continue
       alt_url="${url%_$RESOLUTION.jpg}_$alt.jpg"
-      alt_file="${file%-$RESOLUTION.jpg}-$alt.jpg"
-      [[ -s $alt_file ]] && { got="$alt"; break; }
-      if download "$alt_url" "$alt_file"; then
+      if download "$alt_url" "$file"; then
         got="$alt"
         downloaded=$((downloaded + 1))
         break
@@ -173,7 +204,6 @@ if (( ! DRY_RUN )); then
         map(if .date == $date then
               .resolution = $res
               | .url = ((.url | sub("_[^_]+\\.jpg$"; "")) + "_" + $res + ".jpg")
-              | .file = ((.file | sub("-[^-]+\\.jpg$"; "")) + "-" + $res + ".jpg")
             else . end)' <<<"$resolved")
     else
       failed=$((failed + 1))
@@ -183,13 +213,6 @@ fi
 
 # --------------------------------------------------------------------- state
 
-# Entries older than the API window are kept as long as their file survives, so
-# the library the panel browses is bounded by --keep rather than by Bing's
-# eight-day archive.
-previous='[]'
-if [[ -f $STATE_FILE ]]; then
-  previous=$(jq -c '.entries // []' "$STATE_FILE" 2>/dev/null) || previous='[]'
-fi
 
 cutoff=$(date -d "-$KEEP_DAYS days" +%Y%m%d)
 

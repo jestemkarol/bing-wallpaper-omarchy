@@ -123,6 +123,61 @@ is("today is today", M.isToday("20260818", new Date(2026, 7, 18)), true)
 is("yesterday is not", M.isToday("20260817", new Date(2026, 7, 18)), false)
 is("single-digit days are zero-padded", M.isToday("20260801", new Date(2026, 7, 1)), true)
 
+
+// --- settings ----------------------------------------------------------------
+
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+is("Model defaults match the manifest", M.DEFAULTS, manifest.barWidget.defaults)
+is("every default has a schema entry",
+  Object.keys(M.DEFAULTS).sort(),
+  manifest.barWidget.schema.map(f => f.key).sort())
+is("schema default values match Model defaults",
+  manifest.barWidget.schema.every(f => JSON.stringify(f.defaultValue) === JSON.stringify(M.DEFAULTS[f.key])),
+  true)
+
+const ID = manifest.id
+const barConfig = JSON.stringify({
+  bar: { layout: { left: [{ id: "omarchy.menu" }], center: [], right: [{ id: ID, resolution: "1920x1080", notify: true }] } },
+  plugins: []
+})
+is("reads settings off the bar entry", M.settingsFromShellConfig(barConfig, ID).resolution, "1920x1080")
+is("unset keys fall back to defaults", M.settingsFromShellConfig(barConfig, ID).market, "auto")
+is("booleans survive the round trip", M.settingsFromShellConfig(barConfig, ID).notify, true)
+
+const headlessConfig = JSON.stringify({
+  bar: { layout: { left: [], center: [], right: [] } },
+  plugins: [{ id: ID, market: "pl-PL", keepDays: 7 }]
+})
+is("reads settings off a headless plugins[] entry",
+  M.settingsFromShellConfig(headlessConfig, ID).market, "pl-PL")
+is("integers survive the round trip",
+  M.settingsFromShellConfig(headlessConfig, ID).keepDays, 7)
+
+is("an absent entry yields defaults",
+  M.settingsFromShellConfig('{"bar":{"layout":{"left":[]}},"plugins":[]}', ID), M.DEFAULTS)
+is("unparseable config yields defaults", M.settingsFromShellConfig("{oops", ID), M.DEFAULTS)
+is("an empty config yields defaults", M.settingsFromShellConfig("", ID), M.DEFAULTS)
+
+is("string booleans are coerced",
+  M.settingsFromShellConfig(JSON.stringify({ plugins: [{ id: ID, autoApply: "false" }] }), ID).autoApply, false)
+is("keepDays is clamped low",
+  M.settingsFromShellConfig(JSON.stringify({ plugins: [{ id: ID, keepDays: 0 }] }), ID).keepDays, 1)
+is("keepDays is clamped high",
+  M.settingsFromShellConfig(JSON.stringify({ plugins: [{ id: ID, keepDays: 99999 }] }), ID).keepDays, 365)
+is("a nonsense keepDays falls back",
+  M.settingsFromShellConfig(JSON.stringify({ plugins: [{ id: ID, keepDays: "soon" }] }), ID).keepDays, 30)
+
+const base = M.normalizeSettings(null)
+is("a notification toggle needs no refetch",
+  M.settingsAffectLibrary(base, M.normalizeSettings({ notify: true })), false)
+is("a market change needs a refetch",
+  M.settingsAffectLibrary(base, M.normalizeSettings({ market: "de-DE" })), true)
+is("a resolution change needs a refetch",
+  M.settingsAffectLibrary(base, M.normalizeSettings({ resolution: "1366x768" })), true)
+is("a retention change needs a refetch",
+  M.settingsAffectLibrary(base, M.normalizeSettings({ keepDays: 5 })), true)
+is("a missing side needs a refetch", M.settingsAffectLibrary(null, base), true)
+
 console.log("")
 console.log(passed + " passed, " + failed + " failed")
 process.exit(failed === 0 ? 0 : 1)

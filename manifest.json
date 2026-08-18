@@ -11,7 +11,7 @@
     "service"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml",
+    "barWidget": "Panel.qml",
     "service": "Service.qml"
   },
   "barWidget": {
@@ -39,7 +39,25 @@
         "key": "market",
         "type": "enum",
         "label": "Region",
-        "options": ["auto", "en-US", "en-GB", "en-AU", "en-CA", "en-IN", "de-DE", "fr-FR", "fr-CA", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ja-JP", "zh-CN", "ko-KR"],
+        "options": [
+          "auto",
+          "en-US",
+          "en-GB",
+          "en-AU",
+          "en-CA",
+          "en-IN",
+          "de-DE",
+          "fr-FR",
+          "fr-CA",
+          "es-ES",
+          "it-IT",
+          "pt-BR",
+          "nl-NL",
+          "pl-PL",
+          "ja-JP",
+          "zh-CN",
+          "ko-KR"
+        ],
         "defaultValue": "auto",
         "description": "Bing serves a different image per region. 'auto' follows your system locale, falling back to en-US."
       },
@@ -47,7 +65,13 @@
         "key": "resolution",
         "type": "enum",
         "label": "Resolution",
-        "options": ["UHD", "1920x1200", "1920x1080", "1366x768", "1280x720"],
+        "options": [
+          "UHD",
+          "1920x1200",
+          "1920x1080",
+          "1366x768",
+          "1280x720"
+        ],
         "defaultValue": "UHD",
         "description": "UHD is roughly 4 MB per image; the smaller sizes are a few hundred kilobytes."
       },
