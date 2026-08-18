@@ -178,8 +178,22 @@ remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES
 # the library the panel browses is bounded by --keep rather than by Bing's
 # eight-day archive.
 previous='[]'
+recovered=0
 if [[ -f $STATE_FILE ]]; then
-  previous=$(jq -c '.entries // []' "$STATE_FILE" 2>/dev/null) || previous='[]'
+  # jq exiting 0 is not proof the read is usable: an empty or whitespace-only
+  # state.json makes it print nothing at all, and one whose .entries is not an
+  # array makes it print a non-array. Either value breaks the merge below, and
+  # the run then downloads the whole archive only to prune every file it just
+  # fetched. So only a real array is taken, head bounds a file that somehow
+  # holds more than one document to the single value --argjson accepts, and
+  # anything else starts from an empty library the next run refills.
+  previous=$(jq -c 'if (.entries | type) == "array" then .entries else empty end' \
+    "$STATE_FILE" 2>/dev/null | head -n 1)
+  if [[ -z $previous ]]; then
+    previous='[]'
+    recovered=1
+    echo "bing-wallpaper-sync: $STATE_FILE is unusable, rebuilding the library from scratch" >&2
+  fi
 fi
 
 # The filename no longer encodes market and size, so "do we already have this
@@ -317,6 +331,7 @@ jq -n \
   --argjson failed "$failed" \
   --argjson pruned "$pruned" \
   --argjson dryRun "$DRY_RUN" \
+  --argjson recovered "$recovered" \
   --argjson state "$state" '
   {
     ok: ($failed == 0),
@@ -324,6 +339,7 @@ jq -n \
     failed: $failed,
     pruned: $pruned,
     dryRun: ($dryRun == 1),
+    recoveredState: ($recovered == 1),
     stateFile: null,
     today: ($state.entries[0] // null),
     count: ($state.entries | length)

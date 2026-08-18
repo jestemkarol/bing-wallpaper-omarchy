@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Exercises bing-wallpaper-sync against a recorded API response. No network:
-# --dry-run covers URL and state shaping, and the merge/prune cases pre-create
-# the image files so the download loop finds nothing to fetch.
+# --dry-run covers URL and state shaping, the merge/prune cases pre-create the
+# image files so the download loop finds nothing to fetch, and the corrupt-state
+# cases — where there is no usable state to compare against — point https_proxy
+# at a closed port so the refetch they provoke fails instantly.
 
 set -uo pipefail
 
@@ -257,6 +259,58 @@ jq -c --arg d "$old_date" --arg f "$WORK/b/images/$old_date-en-US-UHD.jpg" \
 run --dir "$WORK/b" --resolution UHD --keep 30 >/dev/null
 is "keeps archived days the API no longer serves" \
   "$(jq -r --arg d "$old_date" 'any(.entries[]; .date == $d)' "$WORK/b/state.json")" "true"
+
+# --- corrupt state -----------------------------------------------------------
+
+# A state.json we cannot read must cost at most one re-download, never the
+# library itself. The dangerous shapes are the ones jq exits 0 on: an empty
+# file prints nothing, and an .entries that is not an array prints a non-array.
+# Both used to reach the merge, blow it up, and leave the prune pass deleting
+# every image the run had just fetched.
+#
+# The run below has no usable previous state, so its download loop tries to
+# refetch the whole archive; https_proxy aims those requests at a closed port
+# to keep the case offline and instant. Failed downloads leave the seeded files
+# untouched, which is what makes this a test of the merge rather than of the
+# network. Answers "<entries in state> <images on disk> <pruned>".
+corrupt_state() {
+  local content="$2" dir="$WORK/corrupt-$1" out
+  seed_images "$dir" UHD
+  printf '%s' "$content" > "$dir/state.json"
+  out=$(https_proxy=http://127.0.0.1:1 run --dir "$dir" --resolution UHD 2>/dev/null)
+  printf '%s %s %s\n' \
+    "$(jq -r '.entries | length' "$dir/state.json" 2>/dev/null)" \
+    "$(find "$dir/images" -maxdepth 1 -type f -name '*.jpg' | wc -l)" \
+    "$(jq -r '.pruned' <<<"$out" 2>/dev/null)"
+}
+
+# The destructive signature was "8 0 8" — eight days re-downloaded, nothing
+# left on disk, eight images pruned.
+is "an empty state.json keeps the library"   "$(corrupt_state empty '')"                        "8 8 0"
+is "a whitespace-only state.json keeps it"   "$(corrupt_state blank '   ')"                     "8 8 0"
+is "a string .entries keeps it"              "$(corrupt_state string '{"entries":"wrong"}')"    "8 8 0"
+is "an object .entries keeps it"             "$(corrupt_state object '{"entries":{"a":1}}')"    "8 8 0"
+is "a number .entries keeps it"              "$(corrupt_state number '{"entries":42}')"         "8 8 0"
+is "a null .entries keeps it"                "$(corrupt_state null '{"entries":null}')"         "8 8 0"
+
+# These two were already safe — jq exits non-zero on the first and on the
+# second, since .entries cannot be read from an array — and must stay that way.
+is "unparseable json keeps it"               "$(corrupt_state garbage 'not json at all')"       "8 8 0"
+is "a top-level array keeps it"              "$(corrupt_state array '[]')"                      "8 8 0"
+
+# Losing the stored library is worth a word: the run costs a full re-download,
+# and it used to report nothing but "ok". --dry-run keeps this offline.
+mkdir -p "$WORK/corrupt-flag"
+printf '' > "$WORK/corrupt-flag/state.json"
+out=$(run --dry-run --dir "$WORK/corrupt-flag" 2>/dev/null)
+is "reports the recovery"        "$(jq -r '.recoveredState' <<<"$out")" "true"
+is "still resolves every day"    "$(jq -r '.count' <<<"$out")"          "8"
+err=$(run --dry-run --dir "$WORK/corrupt-flag" 2>&1 >/dev/null)
+is "the recovery names the file" \
+  "$([[ $err == *"$WORK/corrupt-flag/state.json"* ]] && echo yes || echo no)" "yes"
+
+out=$(run --dry-run --dir "$WORK/b")
+is "a readable state is not flagged" "$(jq -r '.recoveredState' <<<"$out")" "false"
 
 # --- input validation --------------------------------------------------------
 
