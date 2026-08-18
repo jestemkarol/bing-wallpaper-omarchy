@@ -87,9 +87,20 @@ Item {
     return applyEntry(root.newest)
   }
 
-  function applyStep(direction) {
-    var from = root.ownsBackground ? currentEntryDate() : ""
-    return applyEntry(Model.step(root.entries, from, direction))
+  // Chronological, like the panel's arrows: "older" walks back in time and
+  // "newer" forward, whatever order the library happens to be stored in.
+  function applyOlder() {
+    return applyEntry(Model.olderEntry(root.entries, stepOrigin()))
+  }
+
+  function applyNewer() {
+    return applyEntry(Model.newerEntry(root.entries, stepOrigin()))
+  }
+
+  // Step from what is on screen only when this plugin put it there; otherwise
+  // start from the newest image.
+  function stepOrigin() {
+    return root.ownsBackground ? currentEntryDate() : ""
   }
 
   function applyRandom() {
@@ -384,12 +395,15 @@ Item {
       return root.applyToday() ? "applied" : "library is empty"
     }
 
+    // Read as days, not as list positions: "next" is the next day (a newer
+    // image), "previous" the previous day (an older one) — the same reading
+    // as the panel's › and ‹.
     function next(): string {
-      return root.applyStep(1) ? "applied" : "library is empty"
+      return root.applyNewer() ? "applied" : "library is empty"
     }
 
     function previous(): string {
-      return root.applyStep(-1) ? "applied" : "library is empty"
+      return root.applyOlder() ? "applied" : "library is empty"
     }
 
     function random(): string {

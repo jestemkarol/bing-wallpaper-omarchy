@@ -4,8 +4,8 @@ Sets your background to Bing's image of the day, keeps the last days in a
 browsable library, and puts the image back after a theme switch.
 
 The bar button opens a panel with today's image, its title and the photo
-credit. `‹` and `›` walk back through the library, and any day can be made the
-background with one click.
+credit. `‹` steps back through the library and `›` forward again, and any day
+can be made the background with one click.
 
 ## Install
 
@@ -96,15 +96,15 @@ omarchy-shell bing-wallpaper status      # what is downloaded, what is up, when 
 omarchy-shell bing-wallpaper list        # every image in the library
 omarchy-shell bing-wallpaper refresh     # ask Bing now
 omarchy-shell bing-wallpaper today       # apply today's image
-omarchy-shell bing-wallpaper next        # a day further back
-omarchy-shell bing-wallpaper previous    # a day forward
+omarchy-shell bing-wallpaper next        # the next day, a newer image
+omarchy-shell bing-wallpaper previous    # the previous day, an older image
 omarchy-shell bing-wallpaper random      # anything from the library
 omarchy-shell bing-wallpaper apply 20260818
 ```
 
-In the panel: `h`/`l` walk days, `enter` sets the background, `r` refreshes,
-`s` opens settings, `esc` closes. On the bar button, middle click refreshes and
-right click steps back a day.
+In the panel: `h` goes back a day and `l` forward, `enter` sets the
+background, `r` refreshes, `s` opens settings, `esc` closes. On the bar
+button, middle click refreshes and right click steps back a day.
 
 ## Where things live
 

@@ -51,10 +51,19 @@ Panel {
     selectedDate = index !== -1 ? entries[index].date : (hasLibrary ? entries[0].date : "")
   }
 
-  function stepDay(direction) {
+  // Navigation is chronological: ‹ and h go back in time, › and l forward.
+  // The library is newest first, but that ordering is Model.js's business —
+  // the panel asks for "older" or "newer" and never for an index.
+  function showOlder() {
     if (!hasLibrary) return
-    var next = Model.step(entries, selectedDate, direction)
-    if (next) selectedDate = next.date
+    var entry = Model.olderEntry(entries, selectedDate)
+    if (entry) selectedDate = entry.date
+  }
+
+  function showNewer() {
+    if (!hasLibrary) return
+    var entry = Model.newerEntry(entries, selectedDate)
+    if (entry) selectedDate = entry.date
   }
 
   function applySelected() {
@@ -105,8 +114,8 @@ Panel {
 
   function activateCursor() {
     switch (cursorTargets[cursor]) {
-      case "previous": stepDay(-1); break
-      case "next": stepDay(1); break
+      case "previous": showOlder(); break
+      case "next": showNewer(); break
       case "apply": applySelected(); break
       case "refresh": refresh(); break
       case "settings": settingsOpen = !settingsOpen; break
@@ -160,7 +169,7 @@ Panel {
     tooltipText: root.described.title || "Bing Wallpaper"
 
     onPressed: function (buttonCode) {
-      if (buttonCode === Qt.RightButton) { if (root.service) root.service.applyStep(1) }
+      if (buttonCode === Qt.RightButton) { if (root.service) root.service.applyOlder() }
       else if (buttonCode === Qt.MiddleButton) root.refresh()
       else root.toggle()
     }
@@ -190,8 +199,8 @@ Panel {
       onTabRequested: function (direction) { root.switchPanel(direction) }
       onTextKey: function (t) {
         var key = String(t || "").toLowerCase()
-        if (key === "h") root.stepDay(-1)
-        else if (key === "l") root.stepDay(1)
+        if (key === "h") root.showOlder()
+        else if (key === "l") root.showNewer()
         else if (key === "r") root.refresh()
         else if (key === "s") root.settingsOpen = !root.settingsOpen
         else if (key === "t" && root.hasLibrary) root.selectedDate = root.entries[0].date
@@ -377,12 +386,12 @@ Panel {
 
               PanelActionButton {
                 iconText: "‹"
-                tooltipText: "Newer image"
+                tooltipText: "Older image"
                 enabled: root.hasLibrary
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 hasCursor: root.hasCursorOn("previous")
-                onClicked: root.stepDay(-1)
+                onClicked: root.showOlder()
               }
 
               Text {
@@ -397,12 +406,12 @@ Panel {
 
               PanelActionButton {
                 iconText: "›"
-                tooltipText: "Older image"
+                tooltipText: "Newer image"
                 enabled: root.hasLibrary
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 hasCursor: root.hasCursorOn("next")
-                onClicked: root.stepDay(1)
+                onClicked: root.showNewer()
               }
             }
 

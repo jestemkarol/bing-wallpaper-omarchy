@@ -72,6 +72,39 @@ is("wraps past the newest", M.step(state.entries, "20260818", -1).date, "2026081
 is("an unknown date starts at the newest", M.step(state.entries, "19990101", 1).date, "20260818")
 is("an empty library has nowhere to step", M.step([], "20260818", 1), null)
 
+// The dates are asserted rather than the indices: the whole point of these two
+// helpers is that "older" means back in time whatever order the array is in, so
+// an inversion has to fail here rather than only in the panel.
+is("older than today is yesterday", M.olderEntry(state.entries, "20260818").date, "20260817")
+is("newer than today wraps to the oldest", M.newerEntry(state.entries, "20260818").date, "20260816")
+is("older than the oldest wraps to today", M.olderEntry(state.entries, "20260816").date, "20260818")
+is("newer than the oldest is the day after it", M.newerEntry(state.entries, "20260816").date, "20260817")
+
+// A full lap in each direction: three olders and three newers both come home.
+const backwards = []
+let walk = state.entries[0].date
+for (let i = 0; i < 3; i++) { walk = M.olderEntry(state.entries, walk).date; backwards.push(walk) }
+is("walking older visits every day and returns", backwards, ["20260817", "20260816", "20260818"])
+
+const forwards = []
+walk = state.entries[0].date
+for (let i = 0; i < 3; i++) { walk = M.newerEntry(state.entries, walk).date; forwards.push(walk) }
+is("walking newer visits every day and returns", forwards, ["20260816", "20260817", "20260818"])
+
+const single = [state.entries[0]]
+is("older on a single-image library stays put", M.olderEntry(single, "20260818").date, "20260818")
+is("newer on a single-image library stays put", M.newerEntry(single, "20260818").date, "20260818")
+
+is("older on an empty library is null", M.olderEntry([], "20260818"), null)
+is("newer on an empty library is null", M.newerEntry([], "20260818"), null)
+
+is("older from an unknown date starts at the newest",
+  M.olderEntry(state.entries, "19990101").date, "20260818")
+is("newer from an unknown date starts at the newest",
+  M.newerEntry(state.entries, "19990101").date, "20260818")
+is("older from no selection starts at the newest",
+  M.olderEntry(state.entries, "").date, "20260818")
+
 is("random avoids the current image", M.randomEntry(state.entries, "/i/18.jpg").file !== "/i/18.jpg", true)
 is("random on a single-image library returns it", M.randomEntry([state.entries[0]], "/i/18.jpg").date, "20260818")
 is("random on an empty library is null", M.randomEntry([], ""), null)

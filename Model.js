@@ -127,14 +127,27 @@ function entryForDate(state, date) {
   return index === -1 ? null : entries[index]
 }
 
-// Entries are newest first, so "older" walks forward. Both directions wrap so
-// the panel's arrows never dead-end.
+// Raw index arithmetic over the newest-first list. Prefer olderEntry/newerEntry
+// below: a bare +1/-1 at the call site says nothing about which way in time it
+// moves, which is how the arrows ended up inverted. Both directions wrap so the
+// panel's arrows never dead-end, and an unknown date lands on the newest image.
 function step(entries, date, direction) {
   if (!Array.isArray(entries) || entries.length === 0) return null
   var index = indexOfDate(entries, date)
   if (index === -1) return entries[0]
   var next = (index + direction + entries.length) % entries.length
   return entries[next]
+}
+
+// The chronological pair every caller should use. Entries are newest first, so
+// going back in time walks forward through the array — that inversion belongs
+// here, once, rather than in every button and IPC verb.
+function olderEntry(entries, date) {
+  return step(entries, date, 1)
+}
+
+function newerEntry(entries, date) {
+  return step(entries, date, -1)
 }
 
 function randomEntry(entries, excludeFile) {
