@@ -1,0 +1,271 @@
+#!/bin/bash
+
+# Fetches Bing's image-of-the-day metadata, downloads any images the local
+# library is missing, prunes old ones, and rewrites state.json.
+#
+# Runs standalone — Service.qml only shells out to it. Everything it needs to
+# say back to the shell goes to stdout as one JSON object, so the QML side
+# never has to parse human-readable output.
+#
+# Exit codes: 0 success · 1 usage/environment error · 2 fetch failure
+
+set -uo pipefail
+
+DEFAULT_DIR="$HOME/.local/share/omarchy-bing-wallpaper"
+
+# Bing answers curl's default User-Agent with a "Browser Not Supported" HTML
+# page instead of JSON, so every request here presents a browser one.
+USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
+MARKET="en-US"
+RESOLUTION="UHD"
+KEEP_DAYS=30
+DATA_DIR="$DEFAULT_DIR"
+FIXTURE=""
+DRY_RUN=0
+COUNT=8
+
+# Bing stopped publishing some legacy sizes for individual images. When the
+# requested one 404s we fall back down this list rather than leaving a gap in
+# the library.
+RESOLUTION_FALLBACKS=("UHD" "1920x1200" "1920x1080" "1366x768" "1280x720")
+
+usage() {
+  cat <<USAGE
+Usage: bing-wallpaper-sync [options]
+
+  --market <mkt>       Bing market, e.g. en-US, de-DE, ja-JP (default: en-US)
+  --resolution <res>   UHD | 1920x1200 | 1920x1080 | 1366x768 | 1280x720 (default: UHD)
+  --keep <days>        Retain downloaded images for this many days (default: 30)
+  --dir <path>         Library directory (default: $DEFAULT_DIR)
+  --count <n>          How many days of metadata to request, 1-8 (default: 8)
+  --fixture <file>     Read the API response from a file instead of the network
+  --dry-run            Resolve everything but download nothing and write nothing
+  -h, --help           This text
+
+Prints a JSON summary on stdout.
+USAGE
+}
+
+fail() {
+  echo "bing-wallpaper-sync: $*" >&2
+  exit "${2:-1}"
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --market)     MARKET="${2:-}"; shift 2 ;;
+    --resolution) RESOLUTION="${2:-}"; shift 2 ;;
+    --keep)       KEEP_DAYS="${2:-}"; shift 2 ;;
+    --dir)        DATA_DIR="${2:-}"; shift 2 ;;
+    --count)      COUNT="${2:-}"; shift 2 ;;
+    --fixture)    FIXTURE="${2:-}"; shift 2 ;;
+    --dry-run)    DRY_RUN=1; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *)            usage >&2; fail "unknown option: $1" ;;
+  esac
+done
+
+command -v jq >/dev/null || fail "jq is required"
+command -v curl >/dev/null || fail "curl is required"
+
+[[ $MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]] || fail "invalid market: $MARKET"
+[[ $RESOLUTION =~ ^(UHD|[0-9]{3,4}x[0-9]{3,4})$ ]] || fail "invalid resolution: $RESOLUTION"
+[[ $KEEP_DAYS =~ ^[0-9]+$ ]] && (( KEEP_DAYS >= 1 )) || fail "invalid --keep: $KEEP_DAYS"
+[[ $COUNT =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= 8 )) || fail "invalid --count: $COUNT"
+
+IMAGES_DIR="$DATA_DIR/images"
+STATE_FILE="$DATA_DIR/state.json"
+
+# ------------------------------------------------------------------ metadata
+
+response=""
+if [[ -n $FIXTURE ]]; then
+  [[ -f $FIXTURE ]] || fail "fixture not found: $FIXTURE"
+  response=$(cat "$FIXTURE")
+else
+  api="https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=$COUNT&mkt=$MARKET"
+  response=$(curl -fsSL --max-time 20 --retry 2 --retry-delay 1 \
+    -A "$USER_AGENT" -H 'Accept: application/json' "$api") \
+    || fail "could not reach the Bing image archive" 2
+fi
+
+jq -e '(.images | type) == "array" and (.images | length) > 0' <<<"$response" >/dev/null 2>&1 \
+  || fail "unexpected response from the Bing image archive" 2
+
+# Normalize the API payload into our own entry shape. urlbase arrives as a
+# site-relative path ("/th?id=OHR.Foo_EN-US123"); the download URL is that plus
+# "_<resolution>.jpg". `title` is missing on some markets, so fall back to the
+# copyright line's leading clause.
+remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES_DIR" '
+  [ .images[]
+    | (.urlbase // "") as $base
+    | select($base != "")
+    | (.copyright // "") as $copy
+    | {
+        date: (.startdate // ""),
+        fullStartDate: (.fullstartdate // ""),
+        endDate: (.enddate // ""),
+        title: (if (.title // "") != "" then .title else ($copy | split(" (©")[0]) end),
+        copyright: $copy,
+        copyrightLink: (.copyrightlink // ""),
+        urlBase: $base,
+        market: $market,
+        resolution: $res,
+        url: ("https://www.bing.com" + $base + "_" + $res + ".jpg"),
+        file: ($dir + "/" + (.startdate // "unknown") + "-" + $market + "-" + $res + ".jpg")
+      }
+    | select(.date != "")
+  ]' <<<"$response") || fail "could not parse the Bing image archive response" 2
+
+# ------------------------------------------------------------------ download
+
+download() {
+  local url="$1" target="$2"
+  local tmp="$target.part.$$"
+  # Written to a temp file first so a killed shell or a half-finished transfer
+  # can never leave a truncated JPEG that the background renderer then tries
+  # to draw.
+  if curl -fsSL --max-time 120 --retry 2 --retry-delay 2 -A "$USER_AGENT" -o "$tmp" "$url"; then
+    if [[ -s $tmp ]]; then
+      mv -f "$tmp" "$target"
+      return 0
+    fi
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+downloaded=0
+failed=0
+resolved="$remote"
+
+if (( ! DRY_RUN )); then
+  mkdir -p "$IMAGES_DIR" || fail "could not create $IMAGES_DIR"
+
+  while IFS=$'\t' read -r date url file; do
+    [[ -n $date ]] || continue
+    [[ -s $file ]] && continue
+
+    if download "$url" "$file"; then
+      downloaded=$((downloaded + 1))
+      continue
+    fi
+
+    # Requested size unavailable for this image — walk down to a smaller one
+    # and record whichever actually landed, so state.json never points at a
+    # file that is not there.
+    got=""
+    for alt in "${RESOLUTION_FALLBACKS[@]}"; do
+      [[ $alt == "$RESOLUTION" ]] && continue
+      alt_url="${url%_$RESOLUTION.jpg}_$alt.jpg"
+      alt_file="${file%-$RESOLUTION.jpg}-$alt.jpg"
+      [[ -s $alt_file ]] && { got="$alt"; break; }
+      if download "$alt_url" "$alt_file"; then
+        got="$alt"
+        downloaded=$((downloaded + 1))
+        break
+      fi
+    done
+
+    if [[ -n $got ]]; then
+      resolved=$(jq -c --arg date "$date" --arg res "$got" '
+        map(if .date == $date then
+              .resolution = $res
+              | .url = ((.url | sub("_[^_]+\\.jpg$"; "")) + "_" + $res + ".jpg")
+              | .file = ((.file | sub("-[^-]+\\.jpg$"; "")) + "-" + $res + ".jpg")
+            else . end)' <<<"$resolved")
+    else
+      failed=$((failed + 1))
+    fi
+  done < <(jq -r '.[] | [.date, .url, .file] | @tsv' <<<"$remote")
+fi
+
+# --------------------------------------------------------------------- state
+
+# Entries older than the API window are kept as long as their file survives, so
+# the library the panel browses is bounded by --keep rather than by Bing's
+# eight-day archive.
+previous='[]'
+if [[ -f $STATE_FILE ]]; then
+  previous=$(jq -c '.entries // []' "$STATE_FILE" 2>/dev/null) || previous='[]'
+fi
+
+cutoff=$(date -d "-$KEEP_DAYS days" +%Y%m%d)
+
+merged=$(jq -c -n \
+  --argjson remote "$resolved" \
+  --argjson previous "$previous" \
+  --arg cutoff "$cutoff" '
+  ($previous + $remote)
+  | group_by(.date)
+  | map(.[-1])                      # a fresh entry wins over the stored one
+  | map(select(.date >= $cutoff))
+  | sort_by(.date)
+  | reverse')
+
+pruned=0
+if (( ! DRY_RUN )); then
+  # Drop entries whose file vanished, and delete files no surviving entry
+  # claims. Doing both keeps disk and state.json from drifting apart.
+  present=$(jq -c 'map(select(.file != null))' <<<"$merged")
+  kept='[]'
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    file=$(jq -r '.file' <<<"$entry")
+    [[ -s $file ]] || continue
+    kept=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$kept")
+  done < <(jq -c '.[]' <<<"$present")
+  merged="$kept"
+
+  if [[ -d $IMAGES_DIR ]]; then
+    while IFS= read -r file; do
+      [[ -n $file ]] || continue
+      if ! jq -e --arg f "$file" 'any(.[]; .file == $f)' <<<"$merged" >/dev/null; then
+        rm -f -- "$file" && pruned=$((pruned + 1))
+      fi
+    done < <(find "$IMAGES_DIR" -maxdepth 1 -type f -name '*.jpg' 2>/dev/null)
+  fi
+fi
+
+state=$(jq -n \
+  --argjson entries "$merged" \
+  --arg market "$MARKET" \
+  --arg resolution "$RESOLUTION" \
+  --argjson keepDays "$KEEP_DAYS" \
+  --argjson fetchedAt "$(date +%s)" '
+  {
+    version: 1,
+    market: $market,
+    resolution: $resolution,
+    keepDays: $keepDays,
+    fetchedAt: $fetchedAt,
+    entries: $entries
+  }')
+
+if (( ! DRY_RUN )); then
+  mkdir -p "$DATA_DIR"
+  tmp_state="$STATE_FILE.tmp.$$"
+  printf '%s\n' "$state" > "$tmp_state" && mv -f "$tmp_state" "$STATE_FILE" \
+    || { rm -f "$tmp_state"; fail "could not write $STATE_FILE"; }
+fi
+
+jq -n \
+  --argjson downloaded "$downloaded" \
+  --argjson failed "$failed" \
+  --argjson pruned "$pruned" \
+  --argjson dryRun "$DRY_RUN" \
+  --argjson state "$state" '
+  {
+    ok: ($failed == 0),
+    downloaded: $downloaded,
+    failed: $failed,
+    pruned: $pruned,
+    dryRun: ($dryRun == 1),
+    stateFile: null,
+    today: ($state.entries[0] // null),
+    count: ($state.entries | length)
+  }' | jq -c --arg stateFile "$STATE_FILE" '.stateFile = $stateFile'
+
+(( failed == 0 )) || exit 2
+exit 0

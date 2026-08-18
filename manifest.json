@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jestemkarol.bing-wallpaper",
+  "name": "Bing Wallpaper",
+  "version": "0.1.0",
+  "author": "Karol Wylizinski",
+  "license": "MIT",
+  "description": "Syncs your background to Bing's image of the day, keeps a browsable library of the last days, and survives theme switches.",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Bing Wallpaper",
+    "description": "Today's Bing image of the day with its title and copyright, and one click to make it your background.",
+    "category": "Appearance",
+    "aliases": [
+      "bing",
+      "wallpaper",
+      "background"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "market": "auto",
+      "resolution": "UHD",
+      "autoApply": true,
+      "reapplyAfterThemeChange": true,
+      "randomFromLibrary": false,
+      "keepDays": 30,
+      "notify": false
+    },
+    "schema": [
+      {
+        "key": "market",
+        "type": "enum",
+        "label": "Region",
+        "options": ["auto", "en-US", "en-GB", "en-AU", "en-CA", "en-IN", "de-DE", "fr-FR", "fr-CA", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ja-JP", "zh-CN", "ko-KR"],
+        "defaultValue": "auto",
+        "description": "Bing serves a different image per region. 'auto' follows your system locale, falling back to en-US."
+      },
+      {
+        "key": "resolution",
+        "type": "enum",
+        "label": "Resolution",
+        "options": ["UHD", "1920x1200", "1920x1080", "1366x768", "1280x720"],
+        "defaultValue": "UHD",
+        "description": "UHD is roughly 4 MB per image; the smaller sizes are a few hundred kilobytes."
+      },
+      {
+        "key": "autoApply",
+        "type": "boolean",
+        "label": "Apply new images automatically",
+        "defaultValue": true,
+        "description": "Turn off to download in the background and pick images by hand."
+      },
+      {
+        "key": "reapplyAfterThemeChange",
+        "type": "boolean",
+        "label": "Keep the Bing image after a theme switch",
+        "defaultValue": true,
+        "description": "Omarchy resets the background when you change themes. This puts the Bing image back — but only when it was the background beforehand."
+      },
+      {
+        "key": "randomFromLibrary",
+        "type": "boolean",
+        "label": "Shuffle the library instead",
+        "defaultValue": false,
+        "description": "Apply a random downloaded image on each check rather than today's."
+      },
+      {
+        "key": "keepDays",
+        "type": "integer",
+        "label": "Keep images for (days)",
+        "min": 1,
+        "max": 365,
+        "step": 1,
+        "defaultValue": 30
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Notify when the background changes",
+        "defaultValue": false
+      }
+    ]
+  }
+}
