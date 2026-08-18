@@ -40,7 +40,7 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color accent: bar ? bar.accent : Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property real thumbWidth: Style.space(340)
+  readonly property real thumbWidth: Style.space(364)
   readonly property real thumbHeight: Math.round(thumbWidth * 9 / 16)
 
   // ------------------------------------------------------------------ actions
@@ -483,7 +483,8 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Apply new images automatically"
+              label: "Apply new images"
+              description: "New images become your background as soon as they download."
               checked: root.setting("autoApply", Model.DEFAULTS.autoApply)
               foreground: root.foreground
               accent: root.accent
@@ -493,7 +494,7 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Keep it after a theme switch"
+              label: "Keep after theme switch"
               description: "Omarchy resets the background when the theme changes."
               checked: root.setting("reapplyAfterThemeChange", Model.DEFAULTS.reapplyAfterThemeChange)
               foreground: root.foreground
@@ -515,7 +516,7 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: "Notify when the background changes"
+              label: "Notify on change"
               checked: root.setting("notify", Model.DEFAULTS.notify)
               foreground: root.foreground
               accent: root.accent
@@ -524,7 +525,7 @@ Panel {
             }
 
             NumberField {
-              label: "Keep images for (days)"
+              label: "Keep for (days)"
               value: root.setting("keepDays", Model.DEFAULTS.keepDays)
               from: 1
               to: 365

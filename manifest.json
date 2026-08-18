@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jestemkarol.bing-wallpaper",
   "name": "Bing Wallpaper",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Karol Wylizinski",
   "license": "MIT",
   "description": "Syncs your background to Bing's image of the day, keeps a browsable library of the last days, and survives theme switches.",
@@ -78,28 +78,28 @@
       {
         "key": "autoApply",
         "type": "boolean",
-        "label": "Apply new images automatically",
+        "label": "Apply new images",
         "defaultValue": true,
-        "description": "Turn off to download in the background and pick images by hand."
+        "description": "New images become your background as soon as they download."
       },
       {
         "key": "reapplyAfterThemeChange",
         "type": "boolean",
-        "label": "Keep the Bing image after a theme switch",
+        "label": "Keep after theme switch",
         "defaultValue": true,
-        "description": "Omarchy resets the background when you change themes. This puts the Bing image back — but only when it was the background beforehand."
+        "description": "Omarchy resets the background when the theme changes."
       },
       {
         "key": "randomFromLibrary",
         "type": "boolean",
-        "label": "Shuffle the library instead",
+        "label": "Shuffle the library",
         "defaultValue": false,
-        "description": "Apply a random downloaded image on each check rather than today's."
+        "description": "Pick a random downloaded image instead of today's."
       },
       {
         "key": "keepDays",
         "type": "integer",
-        "label": "Keep images for (days)",
+        "label": "Keep for (days)",
         "min": 1,
         "max": 365,
         "step": 1,
@@ -108,7 +108,7 @@
       {
         "key": "notify",
         "type": "boolean",
-        "label": "Notify when the background changes",
+        "label": "Notify on change",
         "defaultValue": false
       }
     ]
