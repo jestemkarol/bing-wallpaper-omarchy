@@ -14,8 +14,8 @@ omarchy plugin add https://github.com/jestemkarol/bing-wallpaper-omarchy.git --e
 ```
 
 That clones it into `~/.config/omarchy/plugins/`, validates the manifest, and
-puts the widget in your bar. Within a few seconds it fetches the last eight
-days and applies today's image.
+puts the widget in your bar. Within a few seconds it fetches Bing's whole
+archive — fifteen days — and applies today's image.
 
 To run it without a bar button, skip `--enable` and add the id to `plugins[]`
 in `~/.config/omarchy/shell.json` instead — the service does the fetching and
@@ -32,8 +32,23 @@ Open the panel and press `s`, or edit the plugin's entry in `shell.json`.
 | Apply new images automatically | on | Off downloads in the background and leaves picking to you. |
 | Keep it after a theme switch | on | See below. |
 | Shuffle the library | off | Applies a random downloaded image on each check instead of today's. |
-| Keep images for | 30 days | Bing itself only serves eight days back; older images stay until this. |
+| Keep images for | 30 days | How deep the library gets. See below. |
 | Notify when the background changes | off | |
+
+## How many images you get
+
+Bing's archive holds **fifteen days**. It serves eight per request and pages
+with `idx`; `idx=7` returns days 7–14 and anything past that clamps to the same
+window, so two requests reach all of it. That is what you have a minute after
+installing.
+
+From there the library grows by one image a day and is bounded by **Keep images
+for**, which defaults to 30 days and goes to 365. So a month in you have a
+month; a year in, a year — but only from the day you installed it. There is no
+way to reach further back through Bing, and this plugin does not fetch from
+third-party mirrors of the archive.
+
+The daily check is a single request. Only the fifteen-day sweep pages twice.
 
 ## Theme switches
 

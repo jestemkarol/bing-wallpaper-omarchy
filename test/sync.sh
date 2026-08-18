@@ -164,6 +164,17 @@ run --dir "$WORK/c" --resolution 4k --dry-run >/dev/null 2>&1
 is "rejects an unknown resolution"  "$?" "1"
 run --dir "$WORK/c" --keep 0 --dry-run >/dev/null 2>&1
 is "rejects --keep 0"               "$?" "1"
+run --dir "$WORK/c" --count 16 --dry-run >/dev/null 2>&1
+is "rejects a count past the archive" "$?" "1"
+run --dir "$WORK/c" --count 0 --dry-run >/dev/null 2>&1
+is "rejects --count 0"              "$?" "1"
+
+# --count trims after paging, so asking for fewer days than a page holds does
+# not get widened back out to the page size.
+out=$(run --dry-run --dir "$WORK/c" --count 3)
+is "--count bounds the request"     "$(jq -r '.count' <<<"$out")" "3"
+is "--count keeps the newest days" \
+  "$(jq -r '.today.date' <<<"$out")" "$(jq -r '[.images[].startdate] | max' "$FIXTURE")"
 "$SYNC" --fixture "$WORK/nope.json" --dry-run --dir "$WORK/c" >/dev/null 2>&1
 is "rejects a missing fixture"      "$?" "1"
 

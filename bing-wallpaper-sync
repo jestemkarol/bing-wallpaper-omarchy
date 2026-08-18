@@ -23,7 +23,13 @@ KEEP_DAYS=30
 DATA_DIR="$DEFAULT_DIR"
 FIXTURE=""
 DRY_RUN=0
-COUNT=8
+COUNT=15
+
+# Bing serves eight days per request and pages with idx. idx=7 returns days
+# 7-14; anything past that clamps to the same window, so fifteen distinct days
+# is the whole archive and two requests reach all of it.
+MAX_ARCHIVE_DAYS=15
+PAGE_SIZE=8
 
 # Bing stopped publishing some legacy sizes for individual images. When the
 # requested one 404s we fall back down this list rather than leaving a gap in
@@ -38,7 +44,8 @@ Usage: bing-wallpaper-sync [options]
   --resolution <res>   UHD | 1920x1200 | 1920x1080 | 1366x768 | 1280x720 (default: UHD)
   --keep <days>        Retain downloaded images for this many days (default: 30)
   --dir <path>         Library directory (default: $DEFAULT_DIR)
-  --count <n>          How many days of metadata to request, 1-8 (default: 8)
+  --count <n>          How many days of metadata to request, 1-15 (default: 15).
+                       Fifteen is everything Bing's archive holds.
   --fixture <file>     Read the API response from a file instead of the network
   --dry-run            Resolve everything but download nothing and write nothing
   -h, --help           This text
@@ -72,26 +79,49 @@ command -v curl >/dev/null || fail "curl is required"
 [[ $MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]] || fail "invalid market: $MARKET"
 [[ $RESOLUTION =~ ^(UHD|[0-9]{3,4}x[0-9]{3,4})$ ]] || fail "invalid resolution: $RESOLUTION"
 [[ $KEEP_DAYS =~ ^[0-9]+$ ]] && (( KEEP_DAYS >= 1 )) || fail "invalid --keep: $KEEP_DAYS"
-[[ $COUNT =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= 8 )) || fail "invalid --count: $COUNT"
+[[ $COUNT =~ ^[0-9]+$ ]] && (( COUNT >= 1 && COUNT <= MAX_ARCHIVE_DAYS )) || fail "invalid --count: $COUNT"
 
 IMAGES_DIR="$DATA_DIR/images"
 STATE_FILE="$DATA_DIR/state.json"
 
 # ------------------------------------------------------------------ metadata
 
+fetch_page() {
+  local idx="$1"
+  curl -fsSL --max-time 20 --retry 2 --retry-delay 1 \
+    -A "$USER_AGENT" -H 'Accept: application/json' \
+    "https://www.bing.com/HPImageArchive.aspx?format=js&idx=$idx&n=$PAGE_SIZE&mkt=$MARKET"
+}
+
 response=""
 if [[ -n $FIXTURE ]]; then
   [[ -f $FIXTURE ]] || fail "fixture not found: $FIXTURE"
   response=$(cat "$FIXTURE")
 else
-  api="https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=$COUNT&mkt=$MARKET"
-  response=$(curl -fsSL --max-time 20 --retry 2 --retry-delay 1 \
-    -A "$USER_AGENT" -H 'Accept: application/json' "$api") \
-    || fail "could not reach the Bing image archive" 2
+  response=$(fetch_page 0) || fail "could not reach the Bing image archive" 2
+
+  # The second page overlaps the first by a day; merging on startdate drops the
+  # duplicate. Only fetched when more than one page was asked for, so the
+  # common daily check stays a single request.
+  if (( COUNT > PAGE_SIZE )); then
+    if older=$(fetch_page "$PAGE_SIZE"); then
+      response=$(jq -c -n --argjson a "$response" --argjson b "$older" '
+        { images: (($a.images // []) + ($b.images // []))
+            | unique_by(.startdate)
+            | sort_by(.startdate)
+            | reverse }')
+    fi
+    # A failed second page is not fatal: the newest eight days are what
+    # matters, and the older ones are already on disk after the first run.
+  fi
 fi
 
 jq -e '(.images | type) == "array" and (.images | length) > 0' <<<"$response" >/dev/null 2>&1 \
   || fail "unexpected response from the Bing image archive" 2
+
+# Honour --count after paging, so a smaller request is not widened by the page
+# size and the fixture path is bounded the same way the network path is.
+response=$(jq -c --argjson n "$COUNT" '.images |= (sort_by(.startdate) | reverse | .[0:$n])' <<<"$response")
 
 # Normalize the API payload into our own entry shape. urlbase arrives as a
 # site-relative path ("/th?id=OHR.Foo_EN-US123"); the download URL is that plus
