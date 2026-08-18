@@ -122,6 +122,26 @@ The background itself is set through `omarchy-theme-bg-set`, the same command
 the built-in background switcher uses, so the transition and the live update
 are Omarchy's own.
 
+## Remove
+
+```bash
+omarchy plugin remove io.github.jestemkarol.bing-wallpaper
+```
+
+That disables the widget and deletes the folder outright — no backup is kept,
+because the checkout's history is upstream in git.
+
+The image library is left behind on purpose, so removing and reinstalling does
+not re-download it:
+
+```bash
+rm -rf ~/.local/share/omarchy-bing-wallpaper
+```
+
+Do that *after* choosing another background — `omarchy theme bg next` will do —
+because the background symlink still points into the library, and deleting the
+images out from under it leaves it dangling.
+
 ## Checking Bing yourself
 
 `bing-wallpaper-sync` is a plain script and runs on its own:
