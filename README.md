@@ -10,7 +10,7 @@ background with one click.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/jestemkarol/omarchy-bing-wallpaper.git --enable
+omarchy plugin add https://github.com/jestemkarol/bing-wallpaper-omarchy.git --enable
 ```
 
 That clones it into `~/.config/omarchy/plugins/`, validates the manifest, and
@@ -47,11 +47,32 @@ choice within a minute, so the one case it gets wrong is changing your
 wallpaper by hand and switching themes in the same minute — the Bing image
 comes back once, and the next hand-pick sticks.
 
+### A note on the bar
+
 A transparent bar (`bar.transparent` in `shell.json`) chooses its text color by
-sampling the wallpaper underneath it. Omarchy re-samples that on a theme
-change but not when only the background changes, so this plugin asks for a
-re-sample after every image it applies — without it, a day's images would take
-turns being unreadable.
+sampling the wallpaper underneath it. Omarchy re-samples that on a theme change
+but not when only the background changes, so this plugin asks for a re-sample
+after every image it applies — without it, a day's images would take turns
+being unreadable.
+
+Photographs are busier than the backgrounds themes ship, and a fully
+transparent bar over one can be a lot. `bar.transparent` is all-or-nothing, but
+a tinted bar is a separate setting — put this in `~/.config/omarchy/shell.toml`,
+which layers over whatever theme is active and survives theme switches:
+
+```toml
+[bar]
+background-alpha = 0.85
+```
+
+and turn the flag off, since it means *fully* transparent:
+
+```bash
+omarchy bar transparent false
+```
+
+That gives a bar in your theme's color at 85% opacity — legible over any
+image, still showing what is behind it.
 
 ## Commands
 
