@@ -130,14 +130,23 @@ response=$(jq -c --argjson n "$COUNT" '.images |= (sort_by(.startdate) | reverse
 # Omarchy renders the background's basename as its display name (see
 # omarchy-theme-bg-current), so the filename carries the image title rather
 # than the market and size — "Geometry Of A Star City" reads better than
-# "En US UHD". A title that slugs to nothing, as a non-Latin market's will,
+# "En US UHD". A title that slugs to nothing — punctuation or emoji only —
 # falls back to the date alone.
 remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES_DIR" '
+  # Keeps Unicode letters and digits, so ja-JP, zh-CN, ko-KR and the other
+  # non-Latin markets get a readable name instead of a bare date. \p{L}\p{N}
+  # is deliberately narrow: separators, shell metacharacters, control
+  # characters and the format characters (Cf) that carry bidi overrides all
+  # fall outside it and collapse to a dash, and the leading-dash strip keeps
+  # a title from ever looking like an option. .[0:48] counts codepoints, so
+  # the byte cap that follows is what actually bounds the filename — a
+  # 48-codepoint CJK slug is 144 bytes.
   def slug:
     ascii_downcase
-    | gsub("[^a-z0-9]+"; "-")
+    | gsub("[^\\p{L}\\p{N}]+"; "-")
     | gsub("^-+|-+$"; "")
     | .[0:48]
+    | until(utf8bytelength <= 120; .[0:-1])
     | gsub("-+$"; "");
 
   [ .images[]

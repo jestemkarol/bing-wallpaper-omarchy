@@ -33,9 +33,10 @@ slugged_name() {
   jq -r --argjson i "$1" '
     def slug:
       ascii_downcase
-      | gsub("[^a-z0-9]+"; "-")
+      | gsub("[^\\p{L}\\p{N}]+"; "-")
       | gsub("^-+|-+$"; "")
       | .[0:48]
+      | until(utf8bytelength <= 120; .[0:-1])
       | gsub("-+$"; "");
     .images[$i]
     | (if (.title // "") != "" then .title else ((.copyright // "") | split(" (©")[0]) end) as $title
@@ -43,6 +44,22 @@ slugged_name() {
     | .startdate + (if $slug != "" then "-" + $slug else "" end) + ".jpg"
   ' "$FIXTURE"
 }
+
+# Answers with the basename the sync script would give an image whose title is
+# $1. A one-image fixture plus --dry-run keeps it offline — the URL is shaped
+# but never fetched — so a title can be anything at all without needing a
+# matching image on Bing's servers.
+name_for() {
+  local title="$1" date="${2:-20260818}"
+  jq -n --arg t "$title" --arg d "$date" \
+    '{images:[{startdate:$d, fullstartdate:($d + "0700"), enddate:$d,
+               urlbase:"/th?id=OHR.Test_EN-US0000000000", title:$t,
+               copyright:"", copyrightlink:""}]}' > "$WORK/title.json"
+  "$SYNC" --fixture "$WORK/title.json" --dry-run --dir "$WORK/n" \
+    | jq -r '.today.file | ltrimstr("'"$WORK"'/n/images/")'
+}
+
+bytes_in() { printf '%s' "$1" | wc -c; }
 
 # Populate a library directory with empty-but-nonzero stand-ins for every image
 # the fixture names, and a state file that claims them, so a real (non-dry) run
@@ -97,6 +114,91 @@ is "resolution stays out of the filename" \
   "$(jq -r '.today.file' <<<"$out")" "$WORK/a/images/$(slugged_name 0)"
 is "the recorded size is the requested one" \
   "$(jq -r '.today.resolution' <<<"$out")" "1366x768"
+
+# --- naming, beyond ASCII ----------------------------------------------------
+
+# Stripping everything outside [a-z0-9] left a non-Latin market with nothing but
+# a date to show, which is exactly what title-based naming was meant to avoid.
+# The slug keeps Unicode letters and digits instead.
+is "keeps a Japanese title" \
+  "$(name_for '富士山の日の出')" "20260818-富士山の日の出.jpg"
+is "keeps a Chinese title" \
+  "$(name_for '黄山的云海')" "20260818-黄山的云海.jpg"
+is "keeps a Korean title" \
+  "$(name_for '한라산의 가을')" "20260818-한라산의-가을.jpg"
+is "keeps a Cyrillic title" \
+  "$(name_for 'Восход над горой')" "20260818-Восход-над-горой.jpg"
+is "keeps a Greek title" \
+  "$(name_for 'Ηλιοβασίλεμα στη θάλασσα')" "20260818-Ηλιοβασίλεμα-στη-θάλασσα.jpg"
+is "keeps both halves of a mixed title" \
+  "$(name_for 'sunset 🌅 over 富士山')" "20260818-sunset-over-富士山.jpg"
+is "keeps non-ASCII digits" \
+  "$(name_for 'Sahara ٢٠٢٦')" "20260818-sahara-٢٠٢٦.jpg"
+
+# ASCII naming is the contract the existing library on disk was written under;
+# widening the character class must not rename anything already downloaded.
+is "leaves an ASCII title exactly as it was" \
+  "$(name_for 'Geometry Of A Star City')" "20260818-geometry-of-a-star-city.jpg"
+
+# A title with no letters or digits at all still has to name a file.
+is "falls back to the date for punctuation only" \
+  "$(name_for '!!!___###')" "20260818.jpg"
+is "falls back to the date for emoji only" \
+  "$(name_for '🌅🌅🌅')" "20260818.jpg"
+
+# --- naming is not an injection surface --------------------------------------
+
+# Everything below is a regression guard. The title comes from a remote JSON
+# document and becomes a path we write, so the slug is the only thing standing
+# between Bing's payload and the filesystem.
+
+traversal=$(name_for '../../../etc/passwd')
+is "a traversal title keeps no separator" \
+  "$traversal" "20260818-etc-passwd.jpg"
+is "no filename ever contains a slash" \
+  "$([[ $traversal == */* ]] && echo yes || echo no)" "no"
+is "a backslash is not a separator either" \
+  "$(name_for '..\\..\\windows\\system32')" "20260818-windows-system32.jpg"
+
+is "a leading dash cannot survive" \
+  "$(name_for '-rf --no-preserve-root')" "20260818-rf-no-preserve-root.jpg"
+is "shell metacharacters do not survive" \
+  "$(name_for '; rm -rf / ;')" "20260818-rm-rf.jpg"
+is "command substitution does not survive" \
+  "$(name_for '$(whoami)`id`')" "20260818-whoami-id.jpg"
+is "quotes do not survive" \
+  "$(name_for "it's \"quoted\"")" "20260818-it-s-quoted.jpg"
+
+control=$(name_for "$(printf 'line\none\ttab\rback')")
+is "newlines and tabs collapse to dashes" \
+  "$control" "20260818-line-one-tab-back.jpg"
+is "a filename is always one line" \
+  "$(printf '%s' "$control" | wc -l)" "0"
+
+# U+202E and the rest of category Cf are not letters, so \p{L}\p{N} drops them.
+# Keeping one would let a title reverse how the name renders and disguise the
+# extension — "gpj.exe" reading as "exe.jpg".
+bidi=$(name_for "$(printf 'photo\u202egpj.txt')")
+is "a bidi override is dropped, not preserved" \
+  "$bidi" "20260818-photo-gpj-txt.jpg"
+is "no format character reaches the filename" \
+  "$(printf '%s' "$bidi" | grep -c $'\u202e')" "0"
+is "zero-width characters are dropped too" \
+  "$(name_for "$(printf 'a\u200bb\ufeffc\u200dd')")" "20260818-a-b-c-d.jpg"
+
+# .[0:48] slices codepoints, so a CJK slug that fits the old cap is three times
+# the bytes. The byte cap is what keeps the basename clear of the 255-byte
+# limit — with room to spare for the ".part.$$" name a download writes first.
+long_ascii=$(name_for "$(printf 'abcdefghij%.0s' 1 2 3 4 5 6 7 8 9 10)")
+is "a long ASCII title still stops at 48 characters" \
+  "$long_ascii" "20260818-abcdefghijabcdefghijabcdefghijabcdefghijabcdefgh.jpg"
+long_cjk=$(name_for "$(printf '富士山の日の出%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)")
+is "a long CJK title is bounded in bytes" \
+  "$(bytes_in "$long_cjk")" "133"
+is "a long CJK name clears the 255-byte limit" \
+  "$([[ $(bytes_in "$long_cjk") -lt 255 ]] && echo yes || echo no)" "yes"
+is "a bounded name still ends cleanly" \
+  "$([[ $long_cjk == *-.jpg ]] && echo yes || echo no)" "no"
 
 # --- state, merge, prune -----------------------------------------------------
 
