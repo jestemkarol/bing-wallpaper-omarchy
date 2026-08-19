@@ -232,6 +232,20 @@ function isToday(date, nowDate) {
 // Bing packs place and photographer into one string:
 //   "Aerial view of Palmanova, ... Italy (© Riccardo Saponi/Getty Images)"
 // The panel shows the description and the credit on separate lines.
+// The credit link comes straight from Bing's feed, and the panel hands it to the
+// desktop opener. Feed data must never reach a shell, so the panel opens it through
+// Qt rather than a command line, and this narrows what is allowed to reach even that:
+// an http(s) URL with no whitespace, control characters or quoting metacharacters.
+// Anything else, including a javascript: or file: scheme, becomes the empty string,
+// which the panel treats as "no link" and leaves unclickable.
+function externalUrl(value) {
+  var url = trimmed(value)
+  if (url === "") return ""
+  if (!/^https?:\/\//i.test(url)) return ""
+  if (/[\u0000-\u0020\u007f-\u009f"'`$\\<>{}|^]/.test(url)) return ""
+  return url
+}
+
 function splitCopyright(copyright) {
   var text = trimmed(copyright)
   if (!text) return { description: "", credit: "" }

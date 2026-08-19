@@ -193,7 +193,7 @@ remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES
         endDate: (.enddate // ""),
         title: $title,
         copyright: $copy,
-        copyrightLink: (.copyrightlink // ""),
+        copyrightLink: ((.copyrightlink // "") | if test("\\Ahttps?://[A-Za-z0-9/?=._&%:+#@~-]+\\z"; "i") then . else "" end),
         urlBase: $base,
         market: $market,
         resolution: $res,

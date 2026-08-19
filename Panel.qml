@@ -74,9 +74,16 @@ Panel {
     if (service) service.sync(false)
   }
 
+  function creditUrl() {
+    return root.selected ? Model.externalUrl(root.selected.copyrightLink) : ""
+  }
+
   function openCredit() {
-    if (!selected || !selected.copyrightLink || !bar) return
-    bar.run("xdg-open " + JSON.stringify(selected.copyrightLink))
+    var url = root.creditUrl()
+    if (url === "") return
+    // Opened through Qt, not a command line. The link is feed data, and the bar's
+    // run() would hand it to bash -lc, where a crafted value executes.
+    Qt.openUrlExternally(url)
   }
 
   // --------------------------------------------------------------- settings
@@ -349,7 +356,7 @@ Panel {
 
               MouseArea {
                 anchors.fill: parent
-                enabled: root.selected && root.selected.copyrightLink !== ""
+                enabled: root.creditUrl() !== ""
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.openCredit()
               }

@@ -67,6 +67,17 @@ name_for() {
     | jq -r '.today.file | ltrimstr("'"$WORK"'/n/images/")'
 }
 
+# Answers with the copyrightLink the sync script would store for a feed value of
+# $1. Same one-image, --dry-run trick as name_for, so it stays offline.
+link_for() {
+  jq -n --arg l "$1" \
+    '{images:[{startdate:"20260818", fullstartdate:"202608180700", enddate:"20260818",
+               urlbase:"/th?id=OHR.Test_EN-US0000000000", title:"Test",
+               copyright:"", copyrightlink:$l}]}' > "$WORK/link.json"
+  "$SYNC" --fixture "$WORK/link.json" --dry-run --dir "$WORK/l" \
+    | jq -r '.today.copyrightLink'
+}
+
 bytes_in() { printf '%s' "$1" | wc -c; }
 
 # Populate a library directory with empty-but-nonzero stand-ins for every image
@@ -553,6 +564,22 @@ timeout 5 "$SYNC" --help >/dev/null 2>&1
 is "--help exits 0"                 "$?" "0"
 timeout 5 "$SYNC" --dry-run --dir "$WORK/c" -h >/dev/null 2>&1
 is "-h still works after other flags" "$?" "0"
+
+# --- credit link -------------------------------------------------------------
+
+# copyrightlink is feed data and the panel opens it. It used to be stored
+# verbatim and concatenated into a bash -lc command line, so a crafted value ran
+# commands on click. The panel no longer uses a shell, and the link is narrowed
+# to a plain http(s) URL here too, so a dangerous value never reaches disk.
+REAL_LINK="https://www.bing.com/search?q=Palmanova+Italy&form=hpcapt&filters=HpDate%3a%2220260818_0700%22"
+is "a real credit link is stored"    "$(link_for "$REAL_LINK")" "$REAL_LINK"
+is "command substitution is dropped" "$(link_for 'https://x.test/$(id)')" ""
+is "backticks are dropped"           "$(link_for 'https://x.test/`id`')" ""
+is "a quoted payload is dropped"     "$(link_for 'https://x.test/a";rm -rf /;"')" ""
+is "the javascript scheme is dropped" "$(link_for 'javascript:alert(1)')" ""
+is "the file scheme is dropped"      "$(link_for 'file:///etc/passwd')" ""
+is "a spaced payload is dropped"     "$(link_for 'https://x.test/a rm -rf /')" ""
+is "an empty link stays empty"       "$(link_for '')" ""
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"

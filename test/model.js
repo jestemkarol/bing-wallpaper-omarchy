@@ -211,6 +211,35 @@ is("a retention change needs a refetch",
   M.settingsAffectLibrary(base, M.normalizeSettings({ keepDays: 5 })), true)
 is("a missing side needs a refetch", M.settingsAffectLibrary(null, base), true)
 
+// The credit link is feed data and the panel opens it. These pin that only a plain
+// http(s) URL survives, so nothing that could be read as shell syntax reaches the
+// opener even if the panel is ever wired back to a command line.
+const REAL_CREDIT =
+  "https://www.bing.com/search?q=Palmanova+Italy&form=hpcapt&filters=HpDate%3a%2220260818_0700%22"
+is("a real Bing credit link is kept", M.externalUrl(REAL_CREDIT), REAL_CREDIT)
+is("http is allowed", M.externalUrl("http://example.test/a"), "http://example.test/a")
+is("an uppercase scheme is allowed",
+  M.externalUrl("HTTPS://example.test/a"), "HTTPS://example.test/a")
+is("surrounding whitespace is trimmed",
+  M.externalUrl("  https://example.test/a  "), "https://example.test/a")
+
+is("command substitution is refused", M.externalUrl("https://x.test/$(id)"), "")
+is("backticks are refused", M.externalUrl("https://x.test/`id`"), "")
+is("a double quote is refused", M.externalUrl('https://x.test/a"b'), "")
+is("a single quote is refused", M.externalUrl("https://x.test/a'b"), "")
+is("a backslash is refused", M.externalUrl("https://x.test/a\\b"), "")
+is("a semicolon payload is refused", M.externalUrl("https://x.test/a\nrm -rf /"), "")
+is("an embedded space is refused", M.externalUrl("https://x.test/a b"), "")
+is("a control character is refused", M.externalUrl("https://x.test/a\u0007b"), "")
+is("the javascript scheme is refused", M.externalUrl("javascript:alert(1)"), "")
+is("the file scheme is refused", M.externalUrl("file:///etc/passwd"), "")
+is("the data scheme is refused", M.externalUrl("data:text/html,<script>"), "")
+is("a scheme-relative url is refused", M.externalUrl("//example.test/a"), "")
+is("a bare word is refused", M.externalUrl("not a url"), "")
+is("an empty link is refused", M.externalUrl(""), "")
+is("a null link is refused", M.externalUrl(null), "")
+is("an undefined link is refused", M.externalUrl(undefined), "")
+
 console.log("")
 console.log(passed + " passed, " + failed + " failed")
 process.exit(failed === 0 ? 0 : 1)
