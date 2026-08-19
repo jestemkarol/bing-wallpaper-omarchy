@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jestemkarol.bing-wallpaper",
   "name": "Bing Wallpaper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Karol Wylizinski",
   "license": "MIT",
   "description": "Syncs your background to Bing's image of the day, keeps a browsable library of the last days, and survives theme switches.",

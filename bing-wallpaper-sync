@@ -94,9 +94,16 @@ STATE_FILE="$DATA_DIR/state.json"
 
 # ------------------------------------------------------------------ metadata
 
+# CURL_PINNED keeps every request on https. -L follows redirects, which with
+# nothing restricting it would let a redirect walk the transfer to another
+# scheme, or keep it bouncing. --proto pins the URL we ask for, --proto-redir
+# pins every hop it is sent on to, and --max-redirs caps the chain. Three hops
+# is more than Bing has ever needed.
+CURL_PINNED=(--proto '=https' --proto-redir '=https' --max-redirs 3)
+
 fetch_page() {
   local idx="$1"
-  curl -fsSL --max-time 20 --retry 2 --retry-delay 1 \
+  curl -fsSL "${CURL_PINNED[@]}" --max-time 20 --retry 2 --retry-delay 1 \
     -A "$USER_AGENT" -H 'Accept: application/json' \
     "https://www.bing.com/HPImageArchive.aspx?format=js&idx=$idx&n=$PAGE_SIZE&mkt=$MARKET"
 }
@@ -135,6 +142,19 @@ response=$(jq -c --argjson n "$COUNT" '.images |= (sort_by(.startdate) | reverse
 # site-relative path ("/th?id=OHR.Foo_EN-US123"); the download URL is that plus
 # "_<resolution>.jpg". `title` is missing on some markets, so fall back to the
 # copyright line's leading clause.
+#
+# The host is pinned by concatenation, and concatenation alone does not hold
+# it: a urlbase of "@evil.example/x" builds
+# "https://www.bing.com@evil.example/x", where the pinned name has become
+# userinfo and the request goes to evil.example instead. A backslash, a
+# control character or a stray space can likewise be read one way here and
+# another by a URL parser. Rather than name each of those, `path_ok` allows
+# only what a genuine urlbase is made of: a leading slash, then letters,
+# digits and / ? = . _ - & % . The second character may not be another slash,
+# so nothing that reads as protocol-relative gets through either. \A and \z
+# rather than ^ and $, so a trailing newline cannot slip past the anchor. An
+# entry that fails is dropped, not fetched.
+#
 # Omarchy renders the background's basename as its display name (see
 # omarchy-theme-bg-current), so the filename carries the image title rather
 # than the market and size — "Geometry Of A Star City" reads better than
@@ -157,9 +177,12 @@ remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES
     | until(utf8bytelength <= 120; .[0:-1])
     | gsub("-+$"; "");
 
+  def path_ok: test("\\A/[A-Za-z0-9?=._&%-][A-Za-z0-9/?=._&%-]*\\z");
+
   [ .images[]
     | (.urlbase // "") as $base
     | select($base != "")
+    | select($base | path_ok)
     | (.copyright // "") as $copy
     | (.startdate // "") as $date
     | (if (.title // "") != "" then .title else ($copy | split(" (©")[0]) end) as $title
@@ -214,14 +237,31 @@ have_current() {
     <<<"$previous" >/dev/null 2>&1
 }
 
+# A JPEG opens with the SOI marker FF D8 and then the FF that begins its first
+# segment. "Did we get anything at all" was the old test, and it let through
+# every 200 that is not an image: an HTML error page, a redirect landing page,
+# a text file, a transfer cut short before a single byte of image data. Any of
+# those would be saved under a .jpg name, recorded in state.json and, with
+# autoApply on, handed to the background setter.
+is_jpeg() {
+  local magic
+  magic=$(od -An -tx1 -N3 <"$1" 2>/dev/null | tr -d ' \n')
+  [[ $magic == ffd8ff ]]
+}
+
+# Every path that promotes a downloaded file goes through here, the requested
+# resolution and each fallback size alike, so the check below covers all of
+# them. A response that is not a JPEG is discarded and reported as a failure,
+# the same as a transport error.
 download() {
   local url="$1" target="$2"
   local tmp="$target.part.$$"
   # Written to a temp file first so a killed shell or a half-finished transfer
   # can never leave a truncated JPEG that the background renderer then tries
   # to draw.
-  if curl -fsSL --max-time 120 --retry 2 --retry-delay 2 -A "$USER_AGENT" -o "$tmp" "$url"; then
-    if [[ -s $tmp ]]; then
+  if curl -fsSL "${CURL_PINNED[@]}" \
+       --max-time 120 --retry 2 --retry-delay 2 -A "$USER_AGENT" -o "$tmp" "$url"; then
+    if is_jpeg "$tmp"; then
       mv -f "$tmp" "$target"
       return 0
     fi

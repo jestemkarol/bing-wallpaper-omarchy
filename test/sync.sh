@@ -1,10 +1,16 @@
 #!/bin/bash
 
-# Exercises bing-wallpaper-sync against a recorded API response. No network:
-# --dry-run covers URL and state shaping, the merge/prune cases pre-create the
-# image files so the download loop finds nothing to fetch, and the corrupt-state
-# cases — where there is no usable state to compare against — point https_proxy
-# at a closed port so the refetch they provoke fails instantly.
+# Exercises bing-wallpaper-sync against a recorded API response. Offline but
+# for one case: --dry-run covers URL and state shaping, the merge/prune cases
+# pre-create the image files so the download loop finds nothing to fetch, the
+# corrupt-state cases — where there is no usable state to compare against —
+# point https_proxy at a closed port so the refetch they provoke fails
+# instantly, and the download-validation cases put a stub curl on PATH so they
+# choose the exact bytes that come back.
+#
+# The exception is the robots.txt case, which asks bing.com (the only host this
+# plugin ever contacts) for a real 200 that is not an image. With no network it
+# fails to fetch instead, which lands on the same assertions.
 
 set -uo pipefail
 
@@ -311,6 +317,173 @@ is "the recovery names the file" \
 
 out=$(run --dry-run --dir "$WORK/b")
 is "a readable state is not flagged" "$(jq -r '.recoveredState' <<<"$out")" "false"
+
+# --- what counts as an image -------------------------------------------------
+
+# The download used to promote anything non-empty. A 200 carrying an HTML error
+# page, a text file, or a transfer cut short before any image data is not a
+# JPEG, and every one of them used to be saved under a .jpg name, recorded in
+# state.json, and handed to the background setter when autoApply is on.
+#
+# The stub below is a curl placed earlier on PATH than the real one, so these
+# cases pick the exact bytes that come back and reach no network at all. It
+# also appends every URL it was asked for to $STUB_LOG, which is what lets the
+# origin cases further down assert that a rejected entry was never fetched.
+STUB_DIR="$WORK/stub"
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/curl" <<'STUB'
+#!/bin/bash
+out=""; url=""
+while (( $# > 0 )); do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -A|-H|--max-time|--retry|--retry-delay|--proto|--proto-redir|--max-redirs) shift 2 ;;
+    -*) shift ;;
+    *)  url="$1"; shift ;;
+  esac
+done
+[[ -n ${STUB_LOG:-} ]] && printf '%s\n' "$url" >> "$STUB_LOG"
+[[ -n $out ]] || exit 0
+
+body="${STUB_BODY:-jpeg}"
+# "fallback" refuses the requested size the way Bing does for images it no
+# longer publishes at UHD, and answers the next size down with a real JPEG.
+if [[ $body == fallback ]]; then
+  if [[ $url == *_UHD.jpg ]]; then body=html; else body=jpeg; fi
+fi
+
+case "$body" in
+  jpeg)      { printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00'; head -c 256 /dev/zero; printf '\xff\xd9'; } > "$out" ;;
+  html)      printf '<!doctype html><title>Browser Not Supported</title>' > "$out" ;;
+  text)      printf 'User-agent: *\nDisallow: /\n' > "$out" ;;
+  empty)     : > "$out" ;;
+  truncated) printf '\xff\xd8' > "$out" ;;
+  *)         exit 22 ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_DIR/curl"
+
+# Runs a real (non-dry) sync over a one-day fixture whose urlbase is $2, with
+# every download answered by the stub in mode $1. Answers
+# "<downloaded> <failed> <entries> <jpgs on disk> <urls requested>".
+stubbed() {
+  local body="$1" urlbase="$2" tag="$3"
+  local dir="$WORK/stub-$tag" fixture="$WORK/stub-$tag.json" log="$WORK/stub-$tag.log" out
+  jq -n --arg b "$urlbase" \
+    '{images:[{startdate:"20260819", fullstartdate:"202608190700", enddate:"20260819",
+               urlbase:$b, title:"Probe", copyright:"", copyrightlink:""}]}' > "$fixture"
+  : > "$log"
+  out=$(env PATH="$STUB_DIR:$PATH" STUB_BODY="$body" STUB_LOG="$log" \
+    "$SYNC" --fixture "$fixture" --dir "$dir" --resolution UHD 2>/dev/null)
+  printf '%s %s %s %s %s\n' \
+    "$(jq -r '.downloaded' <<<"$out")" \
+    "$(jq -r '.failed' <<<"$out")" \
+    "$(jq -r '.count' <<<"$out")" \
+    "$(find "$dir/images" -maxdepth 1 -type f -name '*.jpg' 2>/dev/null | wc -l)" \
+    "$(grep -c . "$log")"
+}
+
+GOOD='/th?id=OHR.Probe_EN-US0000000000'
+
+# A whole JPEG is the control: it has to land, or the cases below prove nothing.
+is "a real JPEG is accepted"        "$(stubbed jpeg "$GOOD" jpeg)"       "1 0 1 1 1"
+
+# The requested size failing must not weaken the check. Four fallback sizes
+# follow UHD, so a refused image costs five requests and still counts as one
+# failure.
+is "an HTML page is not an image"   "$(stubbed html "$GOOD" html)"       "0 1 0 0 5"
+is "a text file is not an image"    "$(stubbed text "$GOOD" text)"       "0 1 0 0 5"
+is "an empty 200 is not an image"   "$(stubbed empty "$GOOD" empty)"     "0 1 0 0 5"
+
+# Two bytes is the SOI marker and nothing after it: present, non-empty, and cut
+# short before the first segment ever starts.
+is "a truncated JPEG is refused"    "$(stubbed truncated "$GOOD" trunc)" "0 1 0 0 5"
+
+is "nothing is left half-written" \
+  "$(find "$WORK" -name '*.part.*' 2>/dev/null | wc -l)" "0"
+
+# The fallback ladder promotes files too, so it has to validate them too. Here
+# UHD answers with an HTML page and 1920x1200 with a real JPEG: the image lands
+# and state records the size that actually arrived.
+is "the fallback path still downloads" "$(stubbed fallback "$GOOD" fb)" "1 0 1 1 2"
+is "the fallback records the size it got" \
+  "$(jq -r '.entries[0].resolution' "$WORK/stub-fb/state.json")" "1920x1200"
+is "the fallback url is the one that worked" \
+  "$(tail -n 1 "$WORK/stub-fb.log")" \
+  "https://www.bing.com${GOOD}_1920x1200.jpg"
+
+# The reproducer that opened this, against bing.com itself and no other host.
+# "/robots.txt?pad=" builds a URL Bing answers 200 with a text file; it used to
+# be saved as 20260819-not-an-image.jpg and recorded as a library entry. This
+# is the one case in the suite that touches the network, and with no network it
+# simply fails to fetch, which lands on exactly these same assertions.
+jq -n '{images:[{startdate:"20260819", fullstartdate:"202608190700", enddate:"20260819",
+                 urlbase:"/robots.txt?pad=", title:"Not An Image",
+                 copyright:"", copyrightlink:""}]}' > "$WORK/robots.json"
+out=$("$SYNC" --fixture "$WORK/robots.json" --dir "$WORK/robots" --resolution UHD 2>/dev/null)
+is "bing's own robots.txt is refused as an image" \
+  "$(jq -r '.downloaded' <<<"$out")" "0"
+is "the refusal counts as a failure" \
+  "$(jq -r '.failed' <<<"$out")" "1"
+is "no file is promoted" \
+  "$(find "$WORK/robots/images" -maxdepth 1 -type f 2>/dev/null | wc -l)" "0"
+is "no entry reaches state.json" \
+  "$(jq -r '.entries | length' "$WORK/robots/state.json")" "0"
+
+# --- the feed does not get to pick the origin --------------------------------
+
+# The download URL is "https://www.bing.com" + urlbase, and concatenation alone
+# does not pin a host: a leading "@" turns the pinned name into userinfo and
+# the request lands on whatever follows. urlbase now has to look like a path,
+# so these are dropped during normalization and never reach curl. The stub log
+# is what proves the second half of that.
+escape() { stubbed jpeg "$1" "$2"; }
+
+is "a leading @ makes it userinfo, so it is dropped" \
+  "$(escape '@bing-wallpaper-test.example/evil' at)"       "0 0 0 0 0"
+is "a protocol-relative // is dropped" \
+  "$(escape '//bing-wallpaper-test.example/evil' slashes)" "0 0 0 0 0"
+is "an absolute https url is dropped" \
+  "$(escape 'https://bing-wallpaper-test.example/evil' abs)" "0 0 0 0 0"
+is "a backslash is dropped" \
+  "$(escape '\bing-wallpaper-test.example\evil' backslash)" "0 0 0 0 0"
+is "a control character is dropped" \
+  "$(escape "$(printf '/th?id=x\nHost: elsewhere')" control)" "0 0 0 0 0"
+is "a urlbase with no leading slash is dropped" \
+  "$(escape 'th?id=OHR.Probe_EN-US0000000000' noslash)"    "0 0 0 0 0"
+is "a space is dropped" \
+  "$(escape '/th?id=a b' space)"                           "0 0 0 0 0"
+is "a colon is dropped" \
+  "$(escape '/th:id=a' colon)"                             "0 0 0 0 0"
+
+# REGRESSION. An allowlist is only worth having if it still passes what Bing
+# actually sends, so the recorded response has to come through untouched: every
+# day survives normalization, every day downloads, and the names are the ones
+# already on disk in existing libraries. The stub supplies the image bytes, so
+# this stays offline and deterministic.
+: > "$WORK/real.log"
+out=$(env PATH="$STUB_DIR:$PATH" STUB_BODY=jpeg STUB_LOG="$WORK/real.log" \
+  "$SYNC" --fixture "$FIXTURE" --dir "$WORK/real" --resolution UHD)
+is "every recorded urlbase survives the allowlist" "$(jq -r '.count' <<<"$out")"      "8"
+is "every day still downloads"                     "$(jq -r '.downloaded' <<<"$out")" "8"
+is "nothing is dropped as a failure"               "$(jq -r '.failed' <<<"$out")"     "0"
+is "the filenames are the ones they always were" \
+  "$(jq -r '.today.file' <<<"$out")" "$WORK/real/images/$(slugged_name 0)"
+is "the whole library reaches disk" \
+  "$(find "$WORK/real/images" -maxdepth 1 -type f -name '*.jpg' | wc -l)" "8"
+is "each day is asked for exactly once" "$(grep -c . "$WORK/real.log")" "8"
+is "the url is the pinned origin plus the feed's path" \
+  "$(head -n 1 "$WORK/real.log")" \
+  "https://www.bing.com$(jq -r '.images[0].urlbase' "$FIXTURE")_UHD.jpg"
+is "every url stays on www.bing.com" \
+  "$(grep -cv '^https://www\.bing\.com/' "$WORK/real.log")" "0"
+
+# A second run over the same library downloads nothing again.
+out=$(env PATH="$STUB_DIR:$PATH" STUB_BODY=jpeg \
+  "$SYNC" --fixture "$FIXTURE" --dir "$WORK/real" --resolution UHD)
+is "a second run is idempotent" "$(jq -r '.downloaded' <<<"$out")" "0"
+is "and keeps every day"        "$(jq -r '.count' <<<"$out")"      "8"
 
 # --- input validation --------------------------------------------------------
 

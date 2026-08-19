@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Runs every test suite. No network, no running shell.
+# Runs every test suite. No running shell, and no network beyond one request to
+# bing.com from sync.sh (see its header).
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

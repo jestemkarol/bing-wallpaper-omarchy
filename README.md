@@ -15,6 +15,14 @@ applied through Omarchy's own `omarchy-theme-bg-set`. Nothing else is pulled in,
 and the plugin talks to no service other than Bing's public image-of-the-day
 endpoint.
 
+That is enforced, not just intended. Downloads are pinned to
+`https://www.bing.com`: the feed supplies a path, never a host, and a value
+that could point the request anywhere else is dropped before it is fetched.
+Every hop stays on https and redirects are capped. A download is only kept if
+the bytes really are a JPEG, so a 200 that turns out to be an error page or a
+transfer cut short is discarded and counted as a failed fetch rather than
+becoming your background.
+
 ## Install
 
 ```bash
@@ -161,7 +169,7 @@ images out from under it leaves it dangling.
 ## Development
 
 ```bash
-./test/run.sh                                    # no network, no running shell
+./test/run.sh                                    # no running shell, one bing.com request
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml
 omarchy restart shell                            # a rescan will not reload a service
