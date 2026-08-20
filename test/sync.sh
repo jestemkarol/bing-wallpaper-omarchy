@@ -80,6 +80,53 @@ link_for() {
 
 bytes_in() { printf '%s' "$1" | wc -c; }
 
+# The retention filter compares dates as strings, so a value starting below
+# "2" sorts under every cutoff and is dropped for a reason that has nothing to
+# do with validation. Four of the cases below are invisible end to end because
+# of it, so date_ok is also exercised on its own, lifted out of the script so
+# the test breaks if the definition is weakened or removed.
+DATE_OK_DEF="$(grep -m1 'def date_ok:' "$SYNC")"
+
+date_ok_says() {
+  [[ -n $DATE_OK_DEF ]] || { echo "no date_ok in $SYNC"; return; }
+  jq -rn --arg d "$1" "$DATE_OK_DEF if (\$d | date_ok) then \"accepted\" else \"refused\" end" \
+    2>/dev/null || echo "error"
+}
+
+# startdate names the image file, so it decides where a download is written.
+# Returns the path the script would use, or the empty string when the entry is
+# refused outright.
+file_for_date() {
+  jq -n --arg d "$1" \
+    '{images:[{startdate:$d, fullstartdate:"202608180700", enddate:"20260818",
+               urlbase:"/th?id=OHR.Test_EN-US0000000000", title:"Test",
+               copyright:"", copyrightlink:""}]}' > "$WORK/date.json"
+  # A fresh library each time. Sharing one would let a refused entry fall back
+  # to whatever an earlier call left in state.json, and the test would pass on
+  # a stale path rather than on the refusal.
+  rm -rf "$WORK/d"
+  "$SYNC" --fixture "$WORK/date.json" --dry-run --dir "$WORK/d" \
+    | jq -r '.today.file // ""'
+}
+
+# A stub curl that reports success and writes real JPEG magic wherever -o
+# points, so a traversal that gets as far as the write leaves proof behind.
+stub_curl_dir() {
+  local dir="$1"
+  mkdir -p "$dir"
+  cat > "$dir/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+while (( $# )); do
+  [[ $1 == -o ]] && { out="$2"; shift; }
+  shift
+done
+[[ -n $out ]] && printf '\xff\xd8\xff\xe0STUB' > "$out"
+STUB
+  chmod +x "$dir/curl"
+}
+
+
 # Populate a library directory with empty-but-nonzero stand-ins for every image
 # the fixture names, and a state file that claims them, so a real (non-dry) run
 # has nothing to download.
@@ -580,6 +627,248 @@ is "the javascript scheme is dropped" "$(link_for 'javascript:alert(1)')" ""
 is "the file scheme is dropped"      "$(link_for 'file:///etc/passwd')" ""
 is "a spaced payload is dropped"     "$(link_for 'https://x.test/a rm -rf /')" ""
 is "an empty link stays empty"       "$(link_for '')" ""
+
+
+# --- where a download is allowed to land -------------------------------------
+
+# startdate is feed data and it is what names the file. A value carrying a
+# slash and a .. walked the write out of the image directory and over whatever
+# file it reached; the retention filter then dropped the entry, so the
+# overwrite left nothing behind in state.json to notice. Bing sends YYYYMMDD.
+is "date_ok accepts a real date"     "$(date_ok_says 20260818)" "accepted"
+is "date_ok refuses traversal"       "$(date_ok_says '../../../etc/wallpaper')" "refused"
+is "date_ok refuses an inner slash"  "$(date_ok_says '20260818/../../evil')" "refused"
+is "date_ok refuses an absolute path" "$(date_ok_says '/etc/wallpaper')" "refused"
+is "date_ok refuses a short date"    "$(date_ok_says 2026081)" "refused"
+is "date_ok refuses a long date"     "$(date_ok_says 202608180)" "refused"
+is "date_ok refuses a non-digit"     "$(date_ok_says 2026081x)" "refused"
+is "date_ok refuses padding"         "$(date_ok_says ' 20260818 ')" "refused"
+is "date_ok refuses a trailing newline" "$(date_ok_says '20260818
+')" "refused"
+is "date_ok refuses emptiness"       "$(date_ok_says '')" "refused"
+
+is "a real date names a file"        "$(basename "$(file_for_date 20260818)")" "20260818-test.jpg"
+is "a traversing date is refused"    "$(file_for_date '../../../etc/wallpaper')" ""
+is "a date with a slash is refused"  "$(file_for_date '20260818/../../evil')" ""
+is "an absolute date is refused"     "$(file_for_date '/etc/wallpaper')" ""
+is "a short date is refused"         "$(file_for_date '2026081')" ""
+is "a non-numeric date is refused"   "$(file_for_date '2026081x')" ""
+is "a padded date is refused"        "$(file_for_date ' 20260818 ')" ""
+is "an empty date is refused"        "$(file_for_date '')" ""
+
+# The end-to-end version of the same thing: a real write, with a file outside
+# the library standing in for a user's wallpaper.
+TRAV="$WORK/traversal"
+mkdir -p "$TRAV/lib/images" "$TRAV/victim"
+printf 'ORIGINAL USER FILE\n' > "$TRAV/victim/wall.jpg"
+stub_curl_dir "$TRAV/bin"
+jq -n '{images:[{startdate:"../../victim/wall", fullstartdate:"202608180700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                 title:"©©©", copyright:"(© x)", copyrightlink:""}]}' > "$TRAV/f.json"
+PATH="$TRAV/bin:$PATH" "$SYNC" --fixture "$TRAV/f.json" --dir "$TRAV/lib" \
+  > "$TRAV/out.json" 2>/dev/null
+is "the file outside the library is untouched" \
+   "$(cat "$TRAV/victim/wall.jpg")" "ORIGINAL USER FILE"
+is "nothing was downloaded for it" \
+   "$(jq -r '.downloaded' < "$TRAV/out.json")" "0"
+
+# --- staying on bing.com -----------------------------------------------------
+
+# --proto-redir pins the scheme a redirect may use, not the host, so the old
+# `curl -fsSL` would follow an https redirect to any host the feed's origin
+# named. Both Bing endpoints answer 200 with no redirect, so the fetcher no
+# longer follows one it cannot verify.
+is "no -L is passed to curl" \
+   "$(grep -c -- '-fsSL' "$SYNC")" "0"
+is "curl is capped at zero redirects" \
+   "$(grep -c -- "--max-redirs 0" "$SYNC")" "1"
+is "the origin allowlist is a single host" \
+   "$(grep -c '^BING_ORIGIN="https://www.bing.com"$' "$SYNC")" "1"
+
+# The redirect decision itself, exercised without a network: a stub curl that
+# reports a next hop through -w, first on the origin and then off it.
+redirect_to() {
+  local location="$1" dir="$WORK/redir"
+  rm -rf "$dir"; mkdir -p "$dir/bin"
+  printf '%s' "$location" > "$dir/location"
+  # Answers every call, not only the first: a failed download is retried at
+  # each fallback resolution, so a stub that redirected once would let the
+  # second attempt through and hide the refusal. The hop is reported until the
+  # caller actually asks for the target, which is what ends a followed chain.
+  cat > "$dir/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; url=""
+while (( $# )); do
+  [[ $1 == -o ]] && { out="$2"; shift; }
+  url="$1"
+  shift
+done
+n=$(( $(cat "$STUB_CALLS" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$STUB_CALLS"
+# Distinct bytes per call, so the test can tell which hop actually produced
+# the file. Identical bytes would let "followed" pass even if bing_get
+# ignored the Location and kept the first response.
+[[ -n $out ]] && printf '\xff\xd8\xff\xe0HOP%s' "$n" > "$out"
+location=$(cat "$STUB_LOCATION")
+[[ $url == "$location" ]] || printf '%s' "$location"
+STUB
+  chmod +x "$dir/bin/curl"
+  jq -n '{images:[{startdate:"20260818", fullstartdate:"202608180700",
+                   enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                   title:"Test", copyright:"", copyrightlink:""}]}' > "$dir/f.json"
+  rm -f "$dir/calls"
+  STUB_CALLS="$dir/calls" STUB_LOCATION="$dir/location" PATH="$dir/bin:$PATH" \
+    "$SYNC" --fixture "$dir/f.json" --dir "$dir/lib" 2>"$dir/err" | jq -r '.downloaded'
+}
+
+# What the kept file actually contains, which is what says whether the hop was
+# followed or the first response was kept.
+redirect_body() {
+  cat "$WORK/redir/lib/images/"*.jpg 2>/dev/null | grep -ao 'HOP[0-9]*' | head -1
+}
+
+is "a redirect that stays on bing is followed" \
+   "$(redirect_to 'https://www.bing.com/th?id=OHR.Test_UHD.jpg')" "1"
+is "the kept file came from the second hop" \
+   "$(redirect_body)" "HOP2"
+is "a redirect to another host is refused" \
+   "$(redirect_to 'https://evil.test/x.jpg')" "0"
+is "a look-alike host is refused" \
+   "$(redirect_to 'https://www.bing.com.evil.test/x.jpg')" "0"
+# Once per attempt, and the script tries each fallback resolution, so the count
+# is not fixed. That it is reported at all is the point.
+is "the refusal is reported" \
+   "$(redirect_to 'https://evil.test/x.jpg' >/dev/null
+      n=$(grep -c 'refusing a redirect' "$WORK/redir/err"); echo $(( n > 0 )))" "1"
+
+is "a userinfo host is refused" \
+   "$(redirect_to 'https://www.bing.com@evil.test/x.jpg')" "0"
+is "a relative hop resolves back onto bing" \
+   "$(redirect_to 'https://www.bing.com/th/redirected.jpg')" "1"
+
+# An endless chain has to stop, and say which URL it gave up on. The stub keeps
+# naming a hop the caller has not asked for yet, so nothing ever resolves.
+CHAIN="$WORK/chain"; rm -rf "$CHAIN"; mkdir -p "$CHAIN/bin"
+cat > "$CHAIN/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+while (( $# )); do
+  [[ $1 == -o ]] && { out="$2"; shift; }
+  shift
+done
+n=$(( $(cat "$STUB_CALLS" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$STUB_CALLS"
+[[ -n $out ]] && printf '\xff\xd8\xff\xe0LOOP' > "$out"
+printf 'https://www.bing.com/hop%s' "$n"
+STUB
+chmod +x "$CHAIN/bin/curl"
+jq -n '{images:[{startdate:"20260818", fullstartdate:"202608180700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                 title:"Test", copyright:"", copyrightlink:""}]}' > "$CHAIN/f.json"
+STUB_CALLS="$CHAIN/calls" PATH="$CHAIN/bin:$PATH" \
+  "$SYNC" --fixture "$CHAIN/f.json" --dir "$CHAIN/lib" >/dev/null 2>"$CHAIN/err"
+is "an endless chain gives up" \
+   "$(grep -c 'too many redirects' "$CHAIN/err" | head -1 | awk '{print ($1 > 0)}')" "1"
+is "it names the url it gave up on, not a curl flag" \
+   "$(grep -m1 'too many redirects' "$CHAIN/err" | grep -c 'https://www.bing.com')" "1"
+is "nothing was kept from the chain" \
+   "$(ls "$CHAIN/lib/images" 2>/dev/null | wc -l)" "0"
+
+# --- the containment check underneath date_ok --------------------------------
+
+# date_ok drops a traversing entry before the download loop ever sees it, which
+# means the second check in that loop has no way to fire through the front
+# door. Run the script with date_ok disabled to reach it, so the belt is tested
+# and not merely present.
+MUT="$WORK/mutant"; mkdir -p "$MUT/lib/images" "$MUT/victim" "$MUT/bin"
+sed 's/def date_ok: test("\\\\A\[0-9\]{8}\\\\z");/def date_ok: true;/' "$SYNC" > "$MUT/sync"
+chmod +x "$MUT/sync"
+is "the mutant really has date_ok disabled" \
+   "$(grep -c 'def date_ok: true;' "$MUT/sync")" "1"
+printf 'ORIGINAL USER FILE\n' > "$MUT/victim/wall.jpg"
+stub_curl_dir "$MUT/bin"
+jq -n '{images:[{startdate:"../../victim/wall", fullstartdate:"202608180700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                 title:"©©©", copyright:"(© x)", copyrightlink:""}]}' > "$MUT/f.json"
+PATH="$MUT/bin:$PATH" "$MUT/sync" --fixture "$MUT/f.json" --dir "$MUT/lib" \
+  > "$MUT/out.json" 2>"$MUT/err"
+is "the write outside the library is refused" \
+   "$(grep -c 'refusing to write outside' "$MUT/err" | awk '{print ($1 > 0)}')" "1"
+is "the user file survives the second layer alone" \
+   "$(cat "$MUT/victim/wall.jpg")" "ORIGINAL USER FILE"
+is "the run reports the failure" \
+   "$(jq -r '.ok' < "$MUT/out.json")" "false"
+
+# The same thing again with a date that survives the retention filter and a
+# target that already exists, which is the only shape where "was the refused
+# entry dropped from the result" is observable at all: the first case is
+# recorded as absent whether or not the code drops it, because its date sorts
+# below every cutoff and its file was never created.
+#
+# images/20260818/../../victim/wall.jpg resolves to lib/victim/wall.jpg, so the
+# 20260818 directory has to exist for the path to resolve.
+MUT2="$WORK/mutant2"; mkdir -p "$MUT2/lib/images/20260818" "$MUT2/lib/victim" "$MUT2/bin"
+cp "$MUT/sync" "$MUT2/sync"
+printf 'ORIGINAL USER FILE\n' > "$MUT2/lib/victim/wall.jpg"
+stub_curl_dir "$MUT2/bin"
+jq -n '{images:[{startdate:"20260818/../../victim/wall", fullstartdate:"202608180700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                 title:"©©©", copyright:"(© x)", copyrightlink:""}]}' > "$MUT2/f.json"
+PATH="$MUT2/bin:$PATH" "$MUT2/sync" --fixture "$MUT2/f.json" --dir "$MUT2/lib" \
+  > "$MUT2/out.json" 2>"$MUT2/err"
+is "the existing file outside the library survives" \
+   "$(cat "$MUT2/lib/victim/wall.jpg")" "ORIGINAL USER FILE"
+is "a refused entry never reaches state.json" \
+   "$(jq -r '.count' < "$MUT2/out.json")" "0"
+is "state.json holds no out-of-tree path" \
+   "$(jq -r '[.entries[].file | select(contains(".."))] | length' \
+      < "$MUT2/lib/state.json" 2>/dev/null || echo 0)" "0"
+
+# --- where a download is staged ----------------------------------------------
+
+# curl -o writes through a symlink already sitting at the path, so the staging
+# name must not be one an attacker can predict from the target. mktemp makes it
+# unguessable; "$target.part.$$" did not.
+STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/lib/images" "$STAGE/bin"
+cat > "$STAGE/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+while (( $# )); do
+  [[ $1 == -o ]] && { out="$2"; shift; }
+  shift
+done
+[[ -n $out ]] && { basename "$out" >> "$STUB_LOG"; printf '\xff\xd8\xff\xe0STUB' > "$out"; }
+STUB
+chmod +x "$STAGE/bin/curl"
+jq -n '{images:[{startdate:"20260818", fullstartdate:"202608180700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.Test_EN-US0000000000",
+                 title:"Test", copyright:"", copyrightlink:""}]}' > "$STAGE/f.json"
+STUB_LOG="$STAGE/log" PATH="$STAGE/bin:$PATH" \
+  "$SYNC" --fixture "$STAGE/f.json" --dir "$STAGE/lib" >/dev/null 2>&1
+is "the staging name is not derived from the target" \
+   "$(grep -c 'test' "$STAGE/log")" "0"
+is "the staging name comes from mktemp" \
+   "$(grep -c '^\.part\.' "$STAGE/log")" "1"
+is "no staging file is left behind" \
+   "$(ls -a "$STAGE/lib/images" | grep -c '^\.part\.')" "0"
+is "the image still lands under its real name" \
+   "$(ls "$STAGE/lib/images")" "20260818-test.jpg"
+
+# --- a malformed entry does not take the day down ----------------------------
+
+# startdate is typed before it is used to build a filename. A JSON number there
+# used to fail the concatenation, and that one error aborted the parse for
+# every other day in the same response.
+jq -n '{images:[{startdate:20260818, urlbase:"/th?id=OHR.A", title:"Numeric",
+                 copyright:"", copyrightlink:""},
+                {startdate:"20260817", fullstartdate:"202608170700",
+                 enddate:"20260818", urlbase:"/th?id=OHR.B", title:"Good day",
+                 copyright:"", copyrightlink:""}]}' > "$WORK/mixed.json"
+rm -rf "$WORK/mixed"
+MIXED=$("$SYNC" --fixture "$WORK/mixed.json" --dry-run --dir "$WORK/mixed")
+is "a numeric startdate does not abort the parse" "$(jq -r '.ok' <<<"$MIXED")" "true"
+is "the well-formed day survives it" "$(jq -r '.today.title' <<<"$MIXED")" "Good day"
+is "the malformed day is dropped" "$(jq -r '.count' <<<"$MIXED")" "1"
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"

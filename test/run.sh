@@ -17,6 +17,13 @@ else
 fi
 
 echo
+if command -v python3 >/dev/null; then
+  "$HERE/render.sh" || status=1
+else
+  echo "render: skipped (python3 is not installed)"
+fi
+
+echo
 if (( status == 0 )); then
   echo "all suites passed"
 else

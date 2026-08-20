@@ -240,6 +240,107 @@ is("an empty link is refused", M.externalUrl(""), "")
 is("a null link is refused", M.externalUrl(null), "")
 is("an undefined link is refused", M.externalUrl(undefined), "")
 
+// --- what reaches the notification argv ------------------------------------
+
+// omarchy-notification-send has no -- separator and reads the first argument
+// not starting with a dash as the description, so a title beginning with one
+// is taken as an option and the notification is lost.
+is("an ordinary title is passed through",
+  M.notificationText({ title: "Palmanova, Italy", date: "18 August 2026" }),
+  "Palmanova, Italy")
+is("a leading dash is kept out of option shape",
+  M.notificationText({ title: "-40 degrees in Oymyakon", date: "x" }),
+  " -40 degrees in Oymyakon")
+is("a double dash is kept out too",
+  M.notificationText({ title: "--exec", date: "x" }), " --exec")
+is("the date is the fallback",
+  M.notificationText({ title: "", date: "18 August 2026" }), "18 August 2026")
+is("a dashed date fallback is handled",
+  M.notificationText({ title: "", date: "-x" }), " -x")
+is("an empty description is empty",
+  M.notificationText({ title: "", date: "" }), "")
+is("a missing description is empty", M.notificationText(null), "")
+
+// --- what reaches a Text element -------------------------------------------
+
+// Titles and copyright are rendered by Text items and by the bar tooltip, and
+// QML's default AutoText mode turns anything that looks like markup into a
+// rich-text document. An <img> in a feed title was fetched on render, with no
+// click involved. Our Text items pin PlainText; the shared tooltip cannot, so
+// the value is defused before it leaves the model.
+is("an image tag cannot survive",
+  M.displayText('<img src="http://tracker.test/x.png">'),
+  'img src="http://tracker.test/x.png"')
+is("a bare angle bracket goes",
+  M.displayText("a < b > c"), "a  b  c")
+is("a script tag cannot survive",
+  M.displayText("<script>fetch('http://x.test')</script>"),
+  "scriptfetch('http://x.test')/script")
+is("an html document cannot survive",
+  M.displayText("<!DOCTYPE html><html><body>"), "!DOCTYPE htmlhtmlbody")
+// An entity fires the same heuristic with no bracket in sight, so the token is
+// broken while an ordinary ampersand is left alone.
+is("a named entity is broken",
+  M.displayText("Sunrise &lt;over the bay"), "Sunrise &ltover the bay")
+is("a numeric entity is broken", M.displayText("&#60;script"), "&#60script")
+is("a hex entity is broken", M.displayText("&#x3c;script"), "&#x3cscript")
+is("an ampersand is left alone",
+  M.displayText("Black & white"), "Black & white")
+is("an ampersand before a word is left alone",
+  M.displayText("AT&T Building"), "AT&T Building")
+is("a non-entity is left alone",
+  M.displayText("x&notanentityatall"), "x&notanentityatall")
+is("a zero-width space is stripped", M.displayText("a\u200bb"), "ab")
+is("a soft hyphen is stripped", M.displayText("a\u00adb"), "ab")
+is("a right-to-left mark is stripped", M.displayText("a\u200fb"), "ab")
+is("an accented title is left alone",
+  M.displayText("Île de Ré, Nouvelle-Aquitaine"), "Île de Ré, Nouvelle-Aquitaine")
+is("a cjk title is left alone", M.displayText("東京の夜景"), "東京の夜景")
+is("a bidi override is stripped",
+  M.displayText("photo by \u202eevil\u202c"), "photo by evil")
+is("a control character is stripped",
+  M.displayText("a\u0000b\u001fc"), "abc")
+is("a newline survives as text",
+  M.displayText("line one\nline two"), "line one\nline two")
+is("an empty value stays empty", M.displayText(""), "")
+is("a null value stays empty", M.displayText(null), "")
+is("an undefined value stays empty", M.displayText(undefined), "")
+
+// describe() is the single boundary the panel and the bar both read through,
+// so the defusing has to happen there rather than at each call site.
+const marked = M.describe({
+  title: '<img src="http://tracker.test/t.png">Palmanova',
+  copyright: '<b>Aerial view</b> (© <img src="http://tracker.test/c.png">Photographer)',
+  date: "20260818"
+})
+is("a marked-up title is defused", marked.title,
+  'img src="http://tracker.test/t.png"Palmanova')
+is("a marked-up description is defused", marked.description, "bAerial view/b")
+is("a marked-up credit is defused", marked.credit,
+  '© img src="http://tracker.test/c.png"Photographer')
+is("no angle bracket reaches the title", /[<>]/.test(marked.title), false)
+is("no angle bracket reaches the description", /[<>]/.test(marked.description), false)
+is("no angle bracket reaches the credit", /[<>]/.test(marked.credit), false)
+
+// The ordinary case still has to come through intact.
+const plain = M.describe({
+  title: "Palmanova, Italy",
+  copyright: "Palmanova, Italy (© Amazing Aerial Agency/Offset)",
+  date: "20260818"
+})
+is("a normal title is unchanged", plain.title, "Palmanova, Italy")
+is("a normal description is unchanged", plain.description, "Palmanova, Italy")
+is("a normal credit is unchanged", plain.credit,
+  "© Amazing Aerial Agency/Offset")
+is("a normal date is unchanged", plain.date, "18 August 2026")
+
+// formatDate hands back anything that is not eight digits untouched. The feed
+// can no longer supply one, but a state.json written before that check existed
+// still can, and the date reaches AutoText consumers of its own.
+const staleDate = M.describe({ title: "t", copyright: "", date: '<img src="http://t.test/d.png">' })
+is("a marked-up date is defused", staleDate.date, 'img src="http://t.test/d.png"')
+is("no angle bracket reaches the date", /[<>]/.test(staleDate.date), false)
+
 console.log("")
 console.log(passed + " passed, " + failed + " failed")
 process.exit(failed === 0 ? 0 : 1)
