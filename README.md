@@ -15,13 +15,21 @@ applied through Omarchy's own `omarchy-theme-bg-set`. Nothing else is pulled in,
 and the plugin talks to no service other than Bing's public image-of-the-day
 endpoint.
 
-That is enforced, not just intended. Downloads are pinned to
+That is enforced, not just intended. Requests are pinned to
 `https://www.bing.com`: the feed supplies a path, never a host, and a value
 that could point the request anywhere else is dropped before it is fetched.
-Every hop stays on https and redirects are capped. A download is only kept if
-the bytes really are a JPEG, so a 200 that turns out to be an error page or a
-transfer cut short is discarded and counted as a failed fetch rather than
-becoming your background.
+Redirects are not followed blindly. `curl` is asked not to follow them at all,
+and each hop is checked here instead, so a redirect leaving `www.bing.com`
+ends the transfer rather than being fetched from wherever it points. The feed
+also names the file, and only an eight-digit date is accepted there, so a
+download can land in the image directory and nowhere else. A download is kept
+only if the bytes really are a JPEG, so a 200 that turns out to be an error
+page or a transfer cut short is discarded and counted as a failed fetch rather
+than becoming your background.
+
+Feed text is treated as text. Titles and copyright lines are rendered with
+`Text.PlainText` and stripped of the characters that would let QML's automatic
+rich-text detection turn a title into a document that loads remote images.
 
 ## Install
 

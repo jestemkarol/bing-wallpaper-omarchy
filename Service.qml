@@ -125,7 +125,7 @@ Item {
     if (!root.settings.notify || !entry) return
     var described = Model.describe(entry)
     notifyProc.command = ["omarchy-notification-send",
-      "Bing Wallpaper", described.title || described.date, "-t", "4000"]
+      "Bing Wallpaper", Model.notificationText(described), "-t", "4000"]
     notifyProc.running = true
   }
 

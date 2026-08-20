@@ -329,6 +329,7 @@ Panel {
             Text {
               width: parent.width
               text: root.described.title
+              textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.subtitle
@@ -339,6 +340,7 @@ Panel {
               width: parent.width
               visible: root.described.description !== "" && root.described.description !== root.described.title
               text: root.described.description
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -349,6 +351,7 @@ Panel {
               width: parent.width
               visible: root.described.credit !== ""
               text: root.described.credit
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -373,6 +376,7 @@ Panel {
               : (root.service && root.service.lastError !== ""
                  ? root.service.lastError
                  : "Nothing downloaded yet. Press r to fetch.")
+            textFormat: Text.PlainText
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -405,6 +409,7 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Style.space(64)
                 text: root.hasLibrary ? Model.formatDateShort(root.selected.date) : "—"
+                textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -554,6 +559,7 @@ Panel {
 
             Text {
               width: parent.width
+              textFormat: Text.PlainText
               text: root.service
                 ? (root.service.entries.length + " image" + (root.service.entries.length === 1 ? "" : "s") + " downloaded")
                 : "Service is not running"

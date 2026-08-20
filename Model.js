@@ -246,6 +246,32 @@ function externalUrl(value) {
   return url
 }
 
+// Feed text reaches Text elements and tooltips whose textFormat defaults to
+// Text.AutoText, and Qt's rich-text heuristic turns any value that looks like
+// markup into a document. An <img src="http://host/x"> in a Bing title is then
+// fetched the moment the panel draws, without a click. Our own Text items pin
+// textFormat to PlainText, but the tooltip in Ui/ belongs to Omarchy and is not
+// ours to change, so the value itself is defused here and both paths are safe.
+//
+// Two things trigger that heuristic, and both are handled. Angle brackets are
+// dropped, so no tag can form. Qt also reads the entity &lt; as an opening
+// bracket, and that fires with no bracket anywhere in the string, so the
+// semicolon closing an entity-shaped token is dropped as well: the token stops
+// being one, while an ordinary ampersand in "Black & white" or "AT&T" is left
+// exactly as it is. Checked against Qt::mightBeRichText itself rather than
+// assumed, over both forms of every case above.
+//
+// The invisible characters go with them: the bidi overrides and marks that let
+// a title paint a photographer's name in an order the string does not have,
+// the zero-width characters that hide a word boundary, and the soft hyphen.
+function displayText(value) {
+  return trimmed(value)
+    .replace(/[<>]/g, "")
+    .replace(/&([a-zA-Z][a-zA-Z0-9]{1,7}|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/g, "&$1")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+}
+
 function splitCopyright(copyright) {
   var text = trimmed(copyright)
   if (!text) return { description: "", credit: "" }
@@ -255,14 +281,32 @@ function splitCopyright(copyright) {
   return { description: trimmed(match[1]), credit: trimmed(match[2]) }
 }
 
+// Every string the panel and the bar render comes through here, so displayText
+// is applied once, at the boundary, rather than at each of the call sites that
+// would have to remember it. That includes the date: formatDate hands back
+// anything that is not eight digits untouched, and while the feed can no
+// longer supply such a value, a state.json written by an older version of this
+// plugin still can, and the date reaches AutoText consumers too.
+// omarchy-notification-send reads the first argument that does not begin with
+// a dash as the description, and it offers no -- separator, so a title that
+// starts with one is parsed as an option instead: at best the notification is
+// dropped, at worst the value lands in a hint. A leading space keeps the title
+// out of that shape and costs a space on screen. Here rather than in
+// Service.qml so it can be tested without a running shell.
+function notificationText(described) {
+  if (!described) return ""
+  var text = described.title || described.date || ""
+  return text.charAt(0) === "-" ? " " + text : text
+}
+
 function describe(entry) {
   if (!entry) return { title: "", description: "", credit: "", date: "" }
-  var parts = splitCopyright(entry.copyright)
+  var parts = splitCopyright(displayText(entry.copyright))
   return {
-    title: trimmed(entry.title) || parts.description,
+    title: displayText(entry.title) || parts.description,
     description: parts.description,
     credit: parts.credit,
-    date: formatDate(entry.date)
+    date: displayText(formatDate(entry.date))
   }
 }
 

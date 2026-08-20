@@ -94,18 +94,59 @@ STATE_FILE="$DATA_DIR/state.json"
 
 # ------------------------------------------------------------------ metadata
 
-# CURL_PINNED keeps every request on https. -L follows redirects, which with
-# nothing restricting it would let a redirect walk the transfer to another
-# scheme, or keep it bouncing. --proto pins the URL we ask for, --proto-redir
-# pins every hop it is sent on to, and --max-redirs caps the chain. Three hops
-# is more than Bing has ever needed.
-CURL_PINNED=(--proto '=https' --proto-redir '=https' --max-redirs 3)
+# CURL_PINNED keeps every request on https and on Bing. --proto pins the URL we
+# ask for to https, and -L is deliberately absent: --proto-redir restricts only
+# the scheme a redirect may use, not the host, so `curl -L` would have followed
+# an https redirect off www.bing.com to anywhere the feed named. Both endpoints
+# answer 200 with no redirect at all, so nothing is lost by asking curl not to
+# follow one and handling it here instead.
+CURL_PINNED=(--proto '=https' --max-redirs 0)
+
+# The one host this plugin talks to. A redirect is followed only when it stays
+# here, so the pinning the README claims is the pinning the code performs.
+BING_ORIGIN="https://www.bing.com"
+
+# Follows a redirect the way -L would, except that a Location leaving
+# www.bing.com ends the transfer instead of being fetched. The body always goes
+# to $out so that -w can report the next hop on stdout without mixing into it,
+# and the hop count bounds the chain the way --max-redirs did.
+bing_get() {
+  local url="$1" out="$2"
+  # Kept before the shift: $1 afterwards is the first curl argument, not the
+  # URL, and is unbound entirely when the caller passes no extra arguments,
+  # which under set -u takes the whole script down.
+  local requested="$1"
+  shift 2
+  local hops=0 location
+  while (( hops <= 3 )); do
+    location=$(curl -fsS "${CURL_PINNED[@]}" -A "$USER_AGENT" "$@" \
+      -o "$out" -w '%{redirect_url}' "$url") || return 1
+    [[ -n $location ]] || return 0
+    # curl reports the Location already resolved against the current URL, so a
+    # relative hop arrives absolute and a prefix test is enough. The trailing
+    # slash matters: without it https://www.bing.com.evil.test/ would pass.
+    if [[ $location != "$BING_ORIGIN"/* ]]; then
+      echo "bing-wallpaper-sync: refusing a redirect off $BING_ORIGIN to $location" >&2
+      return 1
+    fi
+    url="$location"
+    hops=$((hops + 1))
+  done
+  echo "bing-wallpaper-sync: too many redirects for $requested" >&2
+  return 1
+}
 
 fetch_page() {
-  local idx="$1"
-  curl -fsSL "${CURL_PINNED[@]}" --max-time 20 --retry 2 --retry-delay 1 \
-    -A "$USER_AGENT" -H 'Accept: application/json' \
-    "https://www.bing.com/HPImageArchive.aspx?format=js&idx=$idx&n=$PAGE_SIZE&mkt=$MARKET"
+  local idx="$1" body
+  body=$(mktemp "${TMPDIR:-/tmp}/bing-wallpaper-page.XXXXXX") || return 1
+  if bing_get "$BING_ORIGIN/HPImageArchive.aspx?format=js&idx=$idx&n=$PAGE_SIZE&mkt=$MARKET" \
+       "$body" --max-time 20 --retry 2 --retry-delay 1 -H 'Accept: application/json'; then
+    cat "$body"
+    rm -f "$body"
+    return 0
+  fi
+  rm -f "$body"
+  return 1
 }
 
 response=""
@@ -179,12 +220,24 @@ remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES
 
   def path_ok: test("\\A/[A-Za-z0-9?=._&%-][A-Za-z0-9/?=._&%-]*\\z");
 
+  # startdate names the file, so it decides where the download lands. Bing
+  # always sends YYYYMMDD, and anything else is refused rather than repaired:
+  # a value carrying a slash and a .. walks the write out of the image
+  # directory and over whatever file it reaches, and the retention filter
+  # that runs afterwards drops the entry again, so the overwrite leaves no
+  # trace in state.json. Eight digits cannot traverse.
+  def date_ok: test("\\A[0-9]{8}\\z");
+
   [ .images[]
     | (.urlbase // "") as $base
     | select($base != "")
     | select($base | path_ok)
     | (.copyright // "") as $copy
-    | (.startdate // "") as $date
+    # Typed before it is used: a JSON number here fails the string concat that
+    # builds the filename, and that error aborts the parse for every other day
+    # in the response too.
+    | ((.startdate // "") | if type == "string" then . else "" end) as $date
+    | select($date | date_ok)
     | (if (.title // "") != "" then .title else ($copy | split(" (©")[0]) end) as $title
     | ($title | slug) as $slug
     | {
@@ -200,7 +253,6 @@ remote=$(jq -c --arg market "$MARKET" --arg res "$RESOLUTION" --arg dir "$IMAGES
         url: ("https://www.bing.com" + $base + "_" + $res + ".jpg"),
         file: ($dir + "/" + $date + (if $slug != "" then "-" + $slug else "" end) + ".jpg")
       }
-    | select(.date != "")
   ]' <<<"$response") || fail "could not parse the Bing image archive response" 2
 
 # ------------------------------------------------------------------ download
@@ -255,13 +307,19 @@ is_jpeg() {
 # the same as a transport error.
 download() {
   local url="$1" target="$2"
-  local tmp="$target.part.$$"
+  # mktemp rather than "$target.part.$$": curl -o writes *through* a symlink
+  # that is already sitting at the path, so a predictable staging name in a
+  # directory anything else can write to is a way to plant one. mv -f then
+  # renames over the target rather than following it.
+  local tmp
+  tmp=$(mktemp "$IMAGES_DIR/.part.XXXXXX") || return 1
   # Written to a temp file first so a killed shell or a half-finished transfer
   # can never leave a truncated JPEG that the background renderer then tries
   # to draw.
-  if curl -fsSL "${CURL_PINNED[@]}" \
-       --max-time 120 --retry 2 --retry-delay 2 -A "$USER_AGENT" -o "$tmp" "$url"; then
+  if bing_get "$url" "$tmp" --max-time 120 --retry 2 --retry-delay 2; then
     if is_jpeg "$tmp"; then
+      # mktemp creates 0600; the background is an ordinary readable image.
+      chmod 0644 "$tmp"
       mv -f "$tmp" "$target"
       return 0
     fi
@@ -279,6 +337,21 @@ if (( ! DRY_RUN )); then
 
   while IFS=$'\t' read -r date url file; do
     [[ -n $date ]] || continue
+
+    # date_ok already rules this out upstream. Repeated here because this is
+    # the line that writes: a filter is easy to loosen by accident, and the
+    # cost of the second check is a string compare.
+    rel=${file#"$IMAGES_DIR"/}
+    if [[ $file != "$IMAGES_DIR"/* || $rel == */* || $rel == *..* ]]; then
+      echo "bing-wallpaper-sync: refusing to write outside $IMAGES_DIR: $file" >&2
+      failed=$((failed + 1))
+      # Dropped from the result too, not merely left undownloaded: an entry
+      # that stayed here would be written to state.json and the panel would
+      # offer a path outside the library as a background.
+      resolved=$(jq -c --arg f "$file" 'map(select(.file != $f))' <<<"$resolved")
+      continue
+    fi
+
     have_current "$date" "$file" && continue
 
     if download "$url" "$file"; then
