@@ -3,6 +3,8 @@
 Sets your background to Bing's image of the day, keeps the last days in a
 browsable library, and puts the image back after a theme switch.
 
+![The Bing Wallpaper panel open beside the day's image on the desktop](preview.png)
+
 The bar button opens a panel with today's image, its title and the photo
 credit. `‹` steps back through the library and `›` forward again, and any day
 can be made the background with one click.
